@@ -1,0 +1,17 @@
+{
+  "name": "aiops-cli",
+  "version": "1.0.0",
+  "description": "AIOps CLI Interactive System",
+  "main": "ai-qa.js",
+  "bin": {
+    "aiops": "./ai-qa.js"
+  },
+  "scripts": {
+    "start": "node ai-qa.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "chalk": "^4.1.2",
+    "commander": "^11.1.0"
+  }
+}
