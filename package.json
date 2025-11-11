@@ -1,0 +1,30 @@
+{
+  "name": "aiops",
+  "version": "1.0.0",
+  "description": "一个基于 AI 的全自动内容运营系统，支持智能爬取、内容生成和自动发布到小红书等平台。",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"No tests specified yet\"",
+    "prepare": "husky"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PeterGuy326/AIOps.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/PeterGuy326/AIOps/issues"
+  },
+  "homepage": "https://github.com/PeterGuy326/AIOps#readme",
+  "devDependencies": {
+    "@commitlint/cli": "^20.1.0",
+    "@commitlint/config-conventional": "^20.0.0",
+    "husky": "^9.1.7"
+  },
+  "dependencies": {
+    "playwright": "^1.56.1"
+  }
+}

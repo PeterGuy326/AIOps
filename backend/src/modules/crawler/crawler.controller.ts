@@ -1,0 +1,92 @@
+import { Controller, Post, Get, Body, Param, Query } from '@nestjs/common';
+import { CrawlerService, CrawlJobData, PlatformType } from './crawler.service';
+
+/**
+ * 爬虫控制器 - 三段式 RESTful API
+ * 格式: /crawler/{action}/{method}
+ */
+@Controller('crawler')
+export class CrawlerController {
+  constructor(private crawlerService: CrawlerService) {}
+
+  /**
+   * GET /crawler/platform/list
+   * 获取支持的平台列表
+   */
+  @Get('platform/list')
+  getPlatforms() {
+    return {
+      platforms: this.crawlerService.getAvailablePlatforms(),
+      message: '支持的平台列表',
+    };
+  }
+
+  /**
+   * POST /crawler/job/add
+   * 添加爬取任务到队列（异步）
+   */
+  @Post('job/add')
+  async addJob(@Body() jobData: CrawlJobData) {
+    const job = await this.crawlerService.addCrawlJob(jobData);
+    return {
+      message: '爬取任务已加入队列',
+      jobId: job.id,
+      platform: jobData.platform,
+    };
+  }
+
+  /**
+   * POST /crawler/task/execute
+   * 立即执行单平台爬取（同步）
+   */
+  @Post('task/execute')
+  async executeTask(
+    @Body() body: { platform: PlatformType; keyword?: string },
+  ) {
+    const result = await this.crawlerService.crawlPlatform(
+      body.platform,
+      body.keyword,
+    );
+    return {
+      message: '爬取完成',
+      platform: body.platform,
+      success: result.success,
+      articles: result.totalCrawled,
+      errors: result.errors,
+    };
+  }
+
+  /**
+   * POST /crawler/task/execute-all
+   * 执行全平台爬取
+   */
+  @Post('task/execute-all')
+  async executeAllTasks(@Body() body: { keywords?: string[] }) {
+    const results = await this.crawlerService.crawlAllPlatforms(body.keywords);
+
+    return {
+      message: '全平台爬取完成',
+      platforms: results.length,
+      successful: results.filter((r) => r.success).length,
+      totalArticles: results.reduce((sum, r) => sum + r.totalCrawled, 0),
+      results: results.map((r) => ({
+        platform: r.platform,
+        success: r.success,
+        articles: r.totalCrawled,
+        errors: r.errors,
+      })),
+    };
+  }
+
+  /**
+   * POST /crawler/schedule/trigger
+   * 触发定时爬取任务
+   */
+  @Post('schedule/trigger')
+  async scheduleTrigger() {
+    await this.crawlerService.scheduleCrawlHotContent();
+    return {
+      message: '定时爬取任务已触发',
+    };
+  }
+}
