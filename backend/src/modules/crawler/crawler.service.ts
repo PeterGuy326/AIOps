@@ -101,20 +101,17 @@ export class CrawlerService {
           },
         });
 
-        // 同步到 Elasticsearch（用于全文搜索）
+        // 同步到 Elasticsearch（只存储搜索相关字段）
         if (saved._id) {
           await this.databaseService.syncToElasticsearch(saved._id.toString(), {
             title: article.title,
             summary: article.summary,
-            fullContent: article.fullContent || article.summary, // 优先使用全文，否则使用摘要
+            content: article.fullContent || article.summary, // 正文内容
             author: article.author,
             platform: result.platform,
             tags: article.tags || [],
-            likes: article.likes || 0,
-            comments: article.comments || 0,
-            url: article.url,
             publishTime: article.publishTime,
-            crawledAt: article.crawledAt,
+            // 注意：不再同步 likes, comments, url, crawledAt 等元数据到 ES
           });
         }
       } catch (error) {
