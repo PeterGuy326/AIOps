@@ -1,11 +1,19 @@
 import { Controller, Get, Query, Param } from '@nestjs/common';
 import { SearchService } from './search.service';
 
+/**
+ * Search 控制器 - 三段式 RESTful API
+ * 格式: /search/{action}/{method}
+ */
 @Controller('search')
 export class SearchController {
   constructor(private readonly searchService: SearchService) {}
 
-  @Get()
+  /**
+   * GET /search/content/query
+   * 搜索内容
+   */
+  @Get('content/query')
   async search(
     @Query('q') query: string,
     @Query('platform') platform?: string,
@@ -27,7 +35,11 @@ export class SearchController {
     return await this.searchService.search(query, options);
   }
 
-  @Get('similar/:id')
+  /**
+   * GET /search/content/similar/:id
+   * 查找相似内容
+   */
+  @Get('content/similar/:id')
   async findSimilar(
     @Param('id') id: string,
     @Query('size') size?: string,
@@ -36,13 +48,21 @@ export class SearchController {
     return await this.searchService.findSimilar(id, sizeNum);
   }
 
-  @Get('tags')
+  /**
+   * GET /search/tag/popular
+   * 获取热门标签
+   */
+  @Get('tag/popular')
   async getPopularTags(@Query('size') size?: string) {
     const sizeNum = size ? parseInt(size) : 20;
     return await this.searchService.getPopularTags(sizeNum);
   }
 
-  @Get('trending')
+  /**
+   * GET /search/content/trending
+   * 获取热门内容
+   */
+  @Get('content/trending')
   async getTrending(
     @Query('days') days?: string,
     @Query('size') size?: string,

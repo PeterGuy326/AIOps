@@ -9,12 +9,72 @@ export class SearchService {
     private readonly databaseService: DatabaseService,
   ) {}
 
+  /**
+   * 搜索内容 - 两步查询
+   * 1. 从 ES 获取 articleId 列表
+   * 2. 根据 articleId 从 MongoDB 查询完整数据
+   */
   async search(query: string, options: any = {}) {
-    return await this.elasticsearchService.search(query, options);
+    // 第一步：从 ES 搜索获取 articleId 列表
+    const esResult = await this.elasticsearchService.search(query, options);
+
+    // 如果没有结果，直接返回
+    if (!esResult.articleIds || esResult.articleIds.length === 0) {
+      return {
+        total: esResult.total,
+        hits: [],
+      };
+    }
+
+    // 第二步：从 MongoDB 批量查询完整数据
+    const articleIds = esResult.articleIds.map((item) => item.articleId);
+    const documents = await this.databaseService.findRawContentsByIds(articleIds);
+
+    // 按照 ES 返回的顺序和得分重新排序
+    const scoreMap = new Map(
+      esResult.articleIds.map((item) => [item.articleId, item.score]),
+    );
+
+    const hits = documents
+      .map((doc) => ({
+        id: doc._id.toString(),
+        score: scoreMap.get(doc._id.toString()) || 0,
+        ...doc.toObject(),
+      }))
+      .sort((a, b) => (b.score || 0) - (a.score || 0));
+
+    return {
+      total: esResult.total,
+      hits,
+    };
   }
 
+  /**
+   * 查找相似内容 - 两步查询
+   */
   async findSimilar(id: string, size: number = 5) {
-    return await this.elasticsearchService.findSimilar(id, size);
+    // 第一步：从 ES 获取相似文档的 articleId 列表
+    const esResults = await this.elasticsearchService.findSimilar(id, size);
+
+    // 如果没有结果，直接返回
+    if (!esResults || esResults.length === 0) {
+      return [];
+    }
+
+    // 第二步：从 MongoDB 批量查询完整数据
+    const articleIds = esResults.map((item) => item.articleId);
+    const documents = await this.databaseService.findRawContentsByIds(articleIds);
+
+    // 按照 ES 返回的顺序和得分重新排序
+    const scoreMap = new Map(esResults.map((item) => [item.articleId, item.score]));
+
+    return documents
+      .map((doc) => ({
+        id: doc._id.toString(),
+        score: scoreMap.get(doc._id.toString()) || 0,
+        ...doc.toObject(),
+      }))
+      .sort((a, b) => (b.score || 0) - (a.score || 0));
   }
 
   async getPopularTags(size: number = 20) {
