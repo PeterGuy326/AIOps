@@ -63,7 +63,7 @@ ${JSON.stringify(strategy, null, 2)}
 只返回JSON数组，不要其他内容。
       `;
 
-      const response = await this.claudeMCPService['callClaude'](prompt);
+      const response = await this.claudeMCPService.execute(prompt);
 
       // 提取 JSON
       const jsonMatch = response.match(/\[[\s\S]*\]/);
@@ -112,7 +112,7 @@ ${JSON.stringify(analyticsData, null, 2)}
 只返回JSON对象，不要其他内容。
       `;
 
-      const response = await this.claudeMCPService['callClaude'](prompt);
+      const response = await this.claudeMCPService.execute(prompt);
 
       // 提取 JSON
       const jsonMatch = response.match(/\{[\s\S]*\}/);
@@ -161,7 +161,7 @@ ${content}
 }
       `;
 
-      const response = await this.claudeMCPService['callClaude'](prompt);
+      const response = await this.claudeMCPService.execute(prompt);
 
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
