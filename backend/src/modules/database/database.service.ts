@@ -81,6 +81,14 @@ export class DatabaseService {
     return await this.rawContentModel.findOne({ url }).exec();
   }
 
+  /**
+   * 根据 ID 列表批量查询原始内容
+   * @param ids MongoDB _id 列表
+   */
+  async findRawContentsByIds(ids: string[]): Promise<RawContentDocument[]> {
+    return await this.rawContentModel.find({ _id: { $in: ids } }).exec();
+  }
+
   async findRawContentByDateRange(startDate: Date, endDate: Date): Promise<RawContent[]> {
     return await this.rawContentModel
       .find({

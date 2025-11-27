@@ -47,8 +47,9 @@ export class ElasticsearchService implements OnModuleInit {
             },
             mappings: {
               properties: {
+                // ===== 核心搜索字段 =====
                 articleId: {
-                  type: 'keyword', // MongoDB _id 关联
+                  type: 'keyword', // MongoDB _id 关联 - 必须字段
                 },
                 title: {
                   type: 'text',
@@ -57,33 +58,31 @@ export class ElasticsearchService implements OnModuleInit {
                     keyword: { type: 'keyword' },
                   },
                 },
+                content: {
+                  type: 'text',
+                  analyzer: 'chinese_analyzer',
+                  // 正文内容，支持全文搜索
+                },
                 summary: {
                   type: 'text',
                   analyzer: 'chinese_analyzer',
+                  // 摘要，用于搜索和预览
                 },
-                fullContent: {
-                  type: 'text',
-                  analyzer: 'chinese_analyzer',
-                  // 全文内容，支持完整分词搜索
-                },
-                author: {
-                  type: 'text',
-                  fields: {
-                    keyword: { type: 'keyword' },
-                  },
-                },
+                // ===== 过滤字段（用于筛选，不返回给前端）=====
                 platform: {
                   type: 'keyword',
                 },
                 tags: {
                   type: 'keyword',
                 },
-                likes: { type: 'integer' },
-                comments: { type: 'integer' },
-                views: { type: 'integer' },
-                url: { type: 'keyword' },
-                publishTime: { type: 'date' },
-                crawledAt: { type: 'date' },
+                author: {
+                  type: 'keyword', // 改为 keyword，只用于精确匹配
+                },
+                publishTime: {
+                  type: 'date',
+                },
+                // 注意：likes, comments, views, url, crawledAt 等元数据不再存储在 ES
+                // 这些数据从 MongoDB 查询获取
               },
             },
           },
@@ -112,6 +111,10 @@ export class ElasticsearchService implements OnModuleInit {
     }
   }
 
+  /**
+   * 搜索方法 - 只返回 articleId 列表
+   * 完整数据需要调用方根据 articleId 从 MongoDB 查询
+   */
   async search(query: string, options: any = {}) {
     try {
       const {
@@ -129,7 +132,7 @@ export class ElasticsearchService implements OnModuleInit {
         must.push({
           multi_match: {
             query,
-            fields: ['title^3', 'fullContent', 'summary^2', 'author^2'],
+            fields: ['title^3', 'content', 'summary^2'], // 修改为 content，移除 author
             type: 'best_fields',
             fuzziness: 'AUTO',
           },
@@ -149,6 +152,8 @@ export class ElasticsearchService implements OnModuleInit {
         from,
         size,
         sort: [{ [sortBy]: { order: sortOrder } }],
+        // 只返回 articleId 和 score，不返回完整 _source
+        _source: ['articleId'],
       };
 
       const result = await this.client.search({
@@ -158,10 +163,10 @@ export class ElasticsearchService implements OnModuleInit {
 
       return {
         total: result.hits.total,
-        hits: result.hits.hits.map((hit: SearchHit<Record<string, any>>) => ({
-          id: hit._id,
+        // 只返回 articleId 和搜索得分
+        articleIds: result.hits.hits.map((hit: SearchHit<Record<string, any>>) => ({
+          articleId: (hit._source as any)?.articleId || hit._id,
           score: hit._score,
-          ...(hit._source as Record<string, any>),
         })),
       };
     } catch (error) {
@@ -170,6 +175,9 @@ export class ElasticsearchService implements OnModuleInit {
     }
   }
 
+  /**
+   * 查找相似内容 - 只返回 articleId 列表
+   */
   async findSimilar(id: string, size: number = 5) {
     try {
       const result = await this.client.search({
@@ -177,20 +185,20 @@ export class ElasticsearchService implements OnModuleInit {
         body: {
           query: {
             more_like_this: {
-              fields: ['title', 'fullContent', 'summary', 'tags'],
+              fields: ['title', 'content', 'summary', 'tags'], // 修改为 content
               like: [{ _index: this.indexName, _id: id }],
               min_term_freq: 1,
               max_query_terms: 12,
             },
           },
           size,
+          _source: ['articleId'], // 只返回 articleId
         },
       });
 
       return result.hits.hits.map((hit: SearchHit<Record<string, any>>) => ({
-        id: hit._id,
+        articleId: (hit._source as any)?.articleId || hit._id,
         score: hit._score,
-        ...(hit._source as Record<string, any>),
       }));
     } catch (error) {
       this.logger.error('Error finding similar documents:', error);
