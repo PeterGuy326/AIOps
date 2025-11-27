@@ -1,10 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import * as fs from 'fs';
-import * as path from 'path';
-
-const execAsync = promisify(exec);
+import { ClaudeShellQueueService } from './claude-shell-queue.service';
 
 export interface MCPAnalysisResult {
   relevance: number; // 0-1
@@ -32,52 +27,46 @@ export interface MCPStrategyRecommendation {
 }
 
 /**
- * Claude Shell Service - 通过子进程调用 claude 命令
- * 更简单、更可靠的实现方式
+ * Claude MCP Service - 使用队列管理 Shell 调用
+ * - 最多 5 个并发实例
+ * - FIFO 任务队列
+ * - 超时和死锁检测
  */
 @Injectable()
 export class ClaudeMCPService implements OnModuleInit {
   private readonly logger = new Logger(ClaudeMCPService.name);
-  private isConnected = false;
-  private claudeCommand = 'claude';
+
+  constructor(private queueService: ClaudeShellQueueService) {}
 
   async onModuleInit() {
-    await this.connect();
-  }
-
-  /**
-   * 检查 claude 命令是否可用
-   */
-  async connect(): Promise<void> {
-    try {
-      this.logger.log('🔌 检查 Claude 命令可用性...');
-
-      // 检查 claude 命令是否存在
-      const { stdout } = await execAsync('which claude', {
-        timeout: 5000,
-      });
-
-      if (stdout && stdout.trim()) {
-        this.claudeCommand = stdout.trim();
-        this.isConnected = true;
-        this.logger.log(`✅ Claude 命令已就绪: ${this.claudeCommand}`);
-      } else {
-        throw new Error('未找到 claude 命令');
-      }
-    } catch (error) {
-      this.logger.warn('⚠️  未检测到 Claude 命令');
-      this.logger.warn('提示: AI 功能需要安装 Claude CLI');
-      this.logger.warn('解决方案: npm install -g @anthropic-ai/claude-code');
-      this.logger.warn('系统将以降级模式运行（AI 功能不可用）');
-      this.isConnected = false;
-    }
+    // 队列服务会自动初始化
+    this.logger.log('✅ Claude MCP 服务已就绪（队列模式）');
   }
 
   /**
    * 检查连接状态
    */
   isReady(): boolean {
-    return this.isConnected;
+    return this.queueService.isReady();
+  }
+
+  /**
+   * 执行 Claude 命令（通用方法）
+   * @param prompt 提示词
+   * @returns Claude 的响应文本
+   */
+  async execute(prompt: string): Promise<string> {
+    if (!this.isReady()) {
+      throw new Error('Claude 服务未连接');
+    }
+
+    try {
+      const result = await this.queueService.submitTask(prompt);
+      return result;
+    } catch (error) {
+      this.logger.error('Claude execution failed:', error.message);
+      throw error;
+    }
   }
 
   /**
@@ -124,7 +113,7 @@ export class ClaudeMCPService implements OnModuleInit {
 }
 `;
 
-      const response = await this.callClaude(prompt);
+      const response = await this.queueService.submitTask(prompt);
       return this.parseJSON(response, {
         relevance: 0.5,
         quality: 0.5,
@@ -185,7 +174,7 @@ export class ClaudeMCPService implements OnModuleInit {
 }
 `;
 
-      const response = await this.callClaude(prompt);
+      const response = await this.queueService.submitTask(prompt);
       return this.parseJSON(response, {
         category: '未分类',
         subcategories: [],
@@ -248,7 +237,7 @@ ${JSON.stringify(performanceMetrics, null, 2)}
 }
 `;
 
-      const response = await this.callClaude(prompt);
+      const response = await this.queueService.submitTask(prompt);
       return this.parseJSON(response, {
         keywords: ['AI', '科技'],
         platforms: ['zhihu'],
@@ -302,7 +291,7 @@ ${rawContent.substring(0, 2000)}
 }
 `;
 
-      const response = await this.callClaude(prompt);
+      const response = await this.queueService.submitTask(prompt);
       return this.parseJSON(response, {
         title: rawContent.substring(0, 50),
         content: rawContent,
@@ -329,9 +318,11 @@ ${rawContent.substring(0, 2000)}
     try {
       this.logger.debug(`调用 Claude: ${toolName}`, args);
 
-      // 对于 ask_claude 工具，直接调用
+      // 对于 ask_claude 工具，提交到队列
       if (toolName === 'ask_claude') {
-        const response = await this.callClaude(args.prompt || args.question || '');
+        const response = await this.queueService.submitTask(
+          args.prompt || args.question || '',
+        );
         return {
           content: [
             {
@@ -361,7 +352,7 @@ ${rawContent.substring(0, 2000)}
     return [
       {
         name: 'ask_claude',
-        description: '调用 Claude 进行智能分析',
+        description: '调用 Claude 进行智能分析（队列模式）',
         inputSchema: {
           type: 'object',
           properties: {
@@ -377,49 +368,10 @@ ${rawContent.substring(0, 2000)}
   }
 
   /**
-   * 调用 Claude 命令
+   * 获取队列状态
    */
-  private async callClaude(prompt: string): Promise<string> {
-    try {
-      // 创建临时文件存储 prompt（避免命令行参数过长）
-      const tmpDir = '/tmp';
-      const tmpFile = path.join(tmpDir, `claude-prompt-${Date.now()}.txt`);
-
-      // 写入 prompt
-      await fs.promises.writeFile(tmpFile, prompt, 'utf-8');
-
-      // 调用 claude 命令
-      const { stdout, stderr } = await execAsync(
-        `cat "${tmpFile}" | ${this.claudeCommand} --print --output-format json`,
-        {
-          timeout: 120000, // 2分钟超时
-          maxBuffer: 10 * 1024 * 1024, // 10MB 缓冲
-        },
-      );
-
-      // 删除临时文件
-      try {
-        await fs.promises.unlink(tmpFile);
-      } catch (e) {
-        // 忽略删除失败
-      }
-
-      if (stderr && stderr.includes('error')) {
-        this.logger.warn('Claude 命令有警告:', stderr);
-      }
-
-      // 解析 JSON 响应
-      const result = JSON.parse(stdout.trim());
-
-      if (result.is_error) {
-        throw new Error(result.result || '未知错误');
-      }
-
-      return result.result || '';
-    } catch (error) {
-      this.logger.error('调用 Claude 命令失败:', error);
-      throw error;
-    }
+  getQueueStatus() {
+    return this.queueService.getQueueStatus();
   }
 
   /**
@@ -443,9 +395,6 @@ ${rawContent.substring(0, 2000)}
    * 断开连接（兼容接口）
    */
   async disconnect(): Promise<void> {
-    if (this.isConnected) {
-      this.isConnected = false;
-      this.logger.log('已断开 Claude 连接');
-    }
+    this.logger.log('已断开 Claude 连接');
   }
 }

@@ -1,6 +1,7 @@
-import { Controller, Post, Body } from '@nestjs/common';
+import { Controller, Post, Body, Get } from '@nestjs/common';
 import { AIService } from './ai.service';
 import { SmartCrawlerService } from '../crawler/smart-crawler.service';
+import { ClaudeMCPService } from './claude-mcp.service';
 
 /**
  * AI 控制器 - 三段式 RESTful API
@@ -11,6 +12,7 @@ export class AIController {
   constructor(
     private aiService: AIService,
     private smartCrawlerService: SmartCrawlerService,
+    private mcpService: ClaudeMCPService,
   ) {}
 
   /**
@@ -299,6 +301,18 @@ export class AIController {
         averageConfidence:
           trends.reduce((sum, t) => sum + t.confidence, 0) / trends.length,
       },
+    };
+  }
+
+  /**
+   * GET /ai/queue/status
+   * 查看队列状态
+   */
+  @Get('queue/status')
+  async getQueueStatus() {
+    return {
+      message: '队列状态查询成功',
+      ...this.mcpService.getQueueStatus(),
     };
   }
 }
