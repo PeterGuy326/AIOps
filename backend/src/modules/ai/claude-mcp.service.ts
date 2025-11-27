@@ -51,6 +51,41 @@ export class ClaudeMCPService implements OnModuleInit {
   }
 
   /**
+   * 检查浏览器 MCP 是否可用（爬虫功能需要）
+   */
+  hasBrowserCapability(): boolean {
+    return this.queueService.hasBrowserCapability();
+  }
+
+  /**
+   * 获取可用的 MCP 工具列表
+   */
+  getAvailableMCPTools(): string[] {
+    return this.queueService.getAvailableMCPTools();
+  }
+
+  /**
+   * 启动 Chrome（开启远程调试）
+   */
+  async startChrome(): Promise<boolean> {
+    return this.queueService.startChrome();
+  }
+
+  /**
+   * 关闭 Chrome
+   */
+  async stopChrome(): Promise<void> {
+    return this.queueService.stopChrome();
+  }
+
+  /**
+   * 检查 Chrome 是否运行中
+   */
+  isChromeRunning(): boolean {
+    return this.queueService.isChromeRunning();
+  }
+
+  /**
    * 执行 Claude 命令（通用方法）
    * @param prompt 提示词
    * @returns Claude 的响应文本
