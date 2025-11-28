@@ -1,15 +1,15 @@
 import React, { useEffect, useState } from 'react';
-import { 
-  Card, 
-  Form, 
-  Input, 
-  Select, 
-  Button, 
-  Table, 
-  Tag, 
-  Switch, 
-  Slider, 
-  Row, 
+import {
+  Card,
+  Form,
+  Input,
+  Select,
+  Button,
+  Table,
+  Tag,
+  Switch,
+  Slider,
+  Row,
   Col,
   Statistic,
   Progress,
@@ -19,21 +19,27 @@ import {
   Tooltip,
   Alert
 } from 'antd';
-import { 
-  PlayCircleOutlined, 
-  PauseCircleOutlined, 
+import {
+  PlayCircleOutlined,
   SettingOutlined,
   ThunderboltOutlined,
   EyeOutlined,
   RobotOutlined,
-  RiseOutlined
+  RiseOutlined,
+  ReloadOutlined
 } from '@ant-design/icons';
-import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer } from 'recharts';
+import { PieChart, Pie, Cell, Tooltip as RechartsTooltip, ResponsiveContainer } from 'recharts';
 import dayjs from 'dayjs';
-import api from '../api';
+import {
+  crawlerGetPlatforms,
+  crawlerExecuteTask,
+  crawlerExecuteAll,
+  aiGenerateStrategy,
+  aiGenerateKeywords,
+  aiGetQueueStatus,
+} from '../api';
 
 const { Option } = Select;
-const { TextArea } = Input;
 
 interface CrawlStrategy {
   id: string;
@@ -66,45 +72,68 @@ interface CrawlResult {
 const CrawlerStrategy: React.FC = () => {
   const [strategies, setStrategies] = useState<CrawlStrategy[]>([]);
   const [crawlResults, setCrawlResults] = useState<CrawlResult[]>([]);
+  const [platforms, setPlatforms] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editingStrategy, setEditingStrategy] = useState<CrawlStrategy | null>(null);
   const [aiSuggestionModal, setAiSuggestionModal] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<any>(null);
+  const [queueStatus, setQueueStatus] = useState<any>(null);
   const [form] = Form.useForm();
 
   useEffect(() => {
-    loadStrategies();
-    loadCrawlResults();
+    loadPlatforms();
+    loadQueueStatus();
+    // 本地策略示例数据
+    setStrategies([
+      {
+        id: '1',
+        name: '科技热点追踪',
+        status: 'active',
+        keywords: ['AI', '人工智能', 'ChatGPT'],
+        negativeKeywords: [],
+        platforms: ['zhihu', 'wechat'],
+        qualityThreshold: 70,
+        aiOptimization: true,
+        scheduleFrequency: 'hourly',
+        lastRun: new Date().toISOString(),
+        nextRun: dayjs().add(1, 'hour').toISOString(),
+        totalCrawled: 156,
+        successRate: 0.92,
+        aiGeneratedKeywords: [],
+      }
+    ]);
   }, []);
 
-  const loadStrategies = async () => {
+  const loadPlatforms = async () => {
     try {
-      const response = await api.get('/crawler/strategies');
-      setStrategies(response.strategies || []);
+      const res: any = await crawlerGetPlatforms();
+      setPlatforms(res.platforms || []);
     } catch (error) {
-      message.error('加载策略失败');
+      console.error('加载平台列表失败:', error);
+      // 使用默认平台
+      setPlatforms(['zhihu', 'wechat', 'weibo', 'xiaohongshu', 'news']);
     }
   };
 
-  const loadCrawlResults = async () => {
+  const loadQueueStatus = async () => {
     try {
-      const response = await api.get('/crawler/results?limit=50');
-      setCrawlResults(response.results || []);
+      const res: any = await aiGetQueueStatus();
+      setQueueStatus(res);
     } catch (error) {
-      console.error('加载爬取结果失败:', error);
+      console.error('加载队列状态失败:', error);
     }
   };
 
-  const generateAIStrategy = async () => {
+  const generateAIStrategyHandler = async () => {
     try {
       setLoading(true);
-      const response = await api.post('/ai/generate-strategy', {
+      const response: any = await aiGenerateStrategy({
         timeframe: 7,
         platforms: ['zhihu', 'wechat', 'news'],
         objectives: ['trending', 'quality', 'engagement']
       });
-      
+
       setAiSuggestions(response.strategy);
       setAiSuggestionModal(true);
       message.success('AI策略生成成功');
@@ -115,29 +144,51 @@ const CrawlerStrategy: React.FC = () => {
     }
   };
 
+  const generateKeywords = async () => {
+    try {
+      setLoading(true);
+      const response: any = await aiGenerateKeywords({
+        targetCount: 10,
+        context: '内容创作'
+      });
+
+      if (response.keywords) {
+        const keywords = response.keywords.map((k: any) => k.keyword);
+        form.setFieldsValue({ keywords });
+        message.success(`已生成 ${keywords.length} 个关键词`);
+      }
+    } catch (error) {
+      message.error('关键词生成失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const saveStrategy = async (values: any) => {
     try {
       setLoading(true);
-      const strategyData = {
+      const strategyData: CrawlStrategy = {
         ...values,
         id: editingStrategy?.id || `strategy_${Date.now()}`,
         status: 'active',
         lastRun: new Date().toISOString(),
         nextRun: dayjs().add(1, 'hour').toISOString(),
-        totalCrawled: 0,
-        successRate: 0
+        totalCrawled: editingStrategy?.totalCrawled || 0,
+        successRate: editingStrategy?.successRate || 0,
+        aiGeneratedKeywords: [],
+        negativeKeywords: values.negativeKeywords || [],
       };
 
+      // 更新本地状态
       if (editingStrategy) {
-        await api.put(`/crawler/strategies/${editingStrategy.id}`, strategyData);
+        setStrategies(prev => prev.map(s => s.id === editingStrategy.id ? strategyData : s));
         message.success('策略更新成功');
       } else {
-        await api.post('/crawler/strategies', strategyData);
+        setStrategies(prev => [...prev, strategyData]);
         message.success('策略创建成功');
       }
 
       setModalVisible(false);
-      loadStrategies();
     } catch (error) {
       message.error('保存策略失败');
     } finally {
@@ -145,14 +196,79 @@ const CrawlerStrategy: React.FC = () => {
     }
   };
 
-  const executeCrawl = async (strategyId: string) => {
+  const executeCrawl = async (strategy: CrawlStrategy) => {
     try {
       setLoading(true);
-      await api.post(`/crawler/execute/${strategyId}`);
-      message.success('爬取任务已启动');
-      setTimeout(loadCrawlResults, 2000);
+      message.loading('正在执行爬取任务...', 0);
+
+      // 对每个平台执行爬取
+      const results: CrawlResult[] = [];
+      for (const platform of strategy.platforms) {
+        try {
+          const res: any = await crawlerExecuteTask({
+            platform,
+            keyword: strategy.keywords[0],
+          });
+
+          results.push({
+            id: `${Date.now()}_${platform}`,
+            platform,
+            keyword: strategy.keywords[0],
+            articlesFound: res.articles || 0,
+            qualityScore: 0.8,
+            timestamp: new Date().toISOString(),
+            duration: 5,
+            status: res.success ? 'success' : 'failed',
+          });
+        } catch (err) {
+          results.push({
+            id: `${Date.now()}_${platform}`,
+            platform,
+            keyword: strategy.keywords[0],
+            articlesFound: 0,
+            qualityScore: 0,
+            timestamp: new Date().toISOString(),
+            duration: 0,
+            status: 'failed',
+          });
+        }
+      }
+
+      setCrawlResults(prev => [...results, ...prev].slice(0, 50));
+      message.destroy();
+      message.success(`爬取完成: ${results.filter(r => r.status === 'success').length}/${results.length} 成功`);
+
+      // 更新策略统计
+      setStrategies(prev => prev.map(s =>
+        s.id === strategy.id
+          ? {
+              ...s,
+              totalCrawled: s.totalCrawled + results.reduce((sum, r) => sum + r.articlesFound, 0),
+              lastRun: new Date().toISOString(),
+            }
+          : s
+      ));
     } catch (error) {
+      message.destroy();
       message.error('启动爬取失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const executeAllPlatforms = async () => {
+    try {
+      setLoading(true);
+      message.loading('正在执行全平台爬取...', 0);
+
+      const res: any = await crawlerExecuteAll();
+
+      message.destroy();
+      message.success(`全平台爬取完成: ${res.totalArticles || 0} 篇文章`);
+      loadQueueStatus();
+    } catch (error) {
+      message.destroy();
+      message.error('全平台爬取失败');
     } finally {
       setLoading(false);
     }
@@ -206,9 +322,9 @@ const CrawlerStrategy: React.FC = () => {
       title: '平台',
       dataIndex: 'platforms',
       key: 'platforms',
-      render: (platforms: string[]) => (
+      render: (pfs: string[]) => (
         <Space wrap>
-          {platforms.map(platform => (
+          {pfs.map(platform => (
             <Tag key={platform} color="blue">{platform}</Tag>
           ))}
         </Space>
@@ -220,9 +336,9 @@ const CrawlerStrategy: React.FC = () => {
       key: 'successRate',
       width: 120,
       render: (rate: number) => (
-        <Progress 
-          percent={Math.round(rate * 100)} 
-          size="small" 
+        <Progress
+          percent={Math.round(rate * 100)}
+          size="small"
           status={rate > 0.8 ? 'success' : rate > 0.5 ? 'normal' : 'exception'}
         />
       ),
@@ -241,16 +357,17 @@ const CrawlerStrategy: React.FC = () => {
       render: (_: any, record: CrawlStrategy) => (
         <Space>
           <Tooltip title="立即执行">
-            <Button 
-              type="link" 
+            <Button
+              type="link"
               icon={<PlayCircleOutlined />}
-              onClick={() => executeCrawl(record.id)}
+              onClick={() => executeCrawl(record)}
               disabled={record.status === 'stopped'}
+              loading={loading}
             />
           </Tooltip>
           <Tooltip title="编辑策略">
-            <Button 
-              type="link" 
+            <Button
+              type="link"
               icon={<SettingOutlined />}
               onClick={() => {
                 setEditingStrategy(record);
@@ -260,8 +377,8 @@ const CrawlerStrategy: React.FC = () => {
             />
           </Tooltip>
           <Tooltip title="查看详情">
-            <Button 
-              type="link" 
+            <Button
+              type="link"
               icon={<EyeOutlined />}
             />
           </Tooltip>
@@ -296,8 +413,8 @@ const CrawlerStrategy: React.FC = () => {
       key: 'qualityScore',
       width: 120,
       render: (score: number) => (
-        <Progress 
-          percent={Math.round(score * 100)} 
+        <Progress
+          percent={Math.round(score * 100)}
           size="small"
           strokeColor={score > 0.8 ? '#52c41a' : score > 0.6 ? '#faad14' : '#ff4d4f'}
         />
@@ -341,8 +458,8 @@ const CrawlerStrategy: React.FC = () => {
   // 统计数据
   const totalCrawled = strategies.reduce((sum, s) => sum + s.totalCrawled, 0);
   const activeStrategies = strategies.filter(s => s.status === 'active').length;
-  const avgSuccessRate = strategies.length > 0 
-    ? strategies.reduce((sum, s) => sum + s.successRate, 0) / strategies.length 
+  const avgSuccessRate = strategies.length > 0
+    ? strategies.reduce((sum, s) => sum + s.successRate, 0) / strategies.length
     : 0;
 
   return (
@@ -394,8 +511,8 @@ const CrawlerStrategy: React.FC = () => {
         <Col span={6}>
           <Card>
             <Statistic
-              title="AI优化"
-              value={strategies.filter(s => s.aiOptimization).length}
+              title="队列任务"
+              value={queueStatus?.queueLength || 0}
               prefix={<RobotOutlined />}
               valueStyle={{ color: '#722ed1' }}
             />
@@ -406,16 +523,16 @@ const CrawlerStrategy: React.FC = () => {
       {/* 操作按钮 */}
       <Card style={{ marginBottom: 24 }}>
         <Space>
-          <Button 
-            type="primary" 
+          <Button
+            type="primary"
             icon={<RobotOutlined />}
-            onClick={generateAIStrategy}
+            onClick={generateAIStrategyHandler}
             loading={loading}
           >
             AI生成策略
           </Button>
-          <Button 
-            type="default" 
+          <Button
+            type="default"
             icon={<SettingOutlined />}
             onClick={() => {
               setEditingStrategy(null);
@@ -425,8 +542,15 @@ const CrawlerStrategy: React.FC = () => {
           >
             创建策略
           </Button>
-          <Button icon={<EyeOutlined />} onClick={loadCrawlResults}>
-            刷新结果
+          <Button
+            icon={<ThunderboltOutlined />}
+            onClick={executeAllPlatforms}
+            loading={loading}
+          >
+            全平台爬取
+          </Button>
+          <Button icon={<ReloadOutlined />} onClick={loadQueueStatus}>
+            刷新状态
           </Button>
         </Space>
       </Card>
@@ -479,7 +603,14 @@ const CrawlerStrategy: React.FC = () => {
           </Form.Item>
 
           <Form.Item
-            label="关键词"
+            label={
+              <Space>
+                关键词
+                <Button size="small" type="link" onClick={generateKeywords} loading={loading}>
+                  AI生成
+                </Button>
+              </Space>
+            }
             name="keywords"
             rules={[{ required: true, message: '请输入关键词' }]}
           >
@@ -509,11 +640,9 @@ const CrawlerStrategy: React.FC = () => {
                 rules={[{ required: true, message: '请选择目标平台' }]}
               >
                 <Select mode="multiple" placeholder="选择爬取平台">
-                  <Option value="zhihu">知乎</Option>
-                  <Option value="wechat">微信公众号</Option>
-                  <Option value="news">新闻网站</Option>
-                  <Option value="weibo">微博</Option>
-                  <Option value="xiaohongshu">小红书</Option>
+                  {platforms.map(p => (
+                    <Option key={p} value={p}>{p}</Option>
+                  ))}
                 </Select>
               </Form.Item>
             </Col>
@@ -543,7 +672,7 @@ const CrawlerStrategy: React.FC = () => {
                   50: '中',
                   100: '高'
                 }}
-                tipFormatter={value => `${value}%`}
+                tooltip={{ formatter: value => `${value}%` }}
               />
             </Form.Item>
           </Form.Item>
@@ -604,7 +733,7 @@ const CrawlerStrategy: React.FC = () => {
                         cy="50%"
                         outerRadius={80}
                       >
-                        {aiSuggestions.platformWeights?.map((entry: any, index: number) => (
+                        {aiSuggestions.platformWeights?.map((_: any, index: number) => (
                           <Cell key={`cell-${index}`} fill={['#0088FE', '#00C49F', '#FFBB28', '#FF8042'][index % 4]} />
                         ))}
                       </Pie>
@@ -620,8 +749,8 @@ const CrawlerStrategy: React.FC = () => {
             </Card>
 
             <div style={{ textAlign: 'center', marginTop: 16 }}>
-              <Button 
-                type="primary" 
+              <Button
+                type="primary"
                 onClick={() => {
                   form.setFieldsValue({
                     keywords: aiSuggestions.keywords,
