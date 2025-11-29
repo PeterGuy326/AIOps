@@ -12,6 +12,7 @@ import { DatabaseModule } from './modules/database/database.module';
 import { ElasticsearchModule } from './modules/elasticsearch/elasticsearch.module';
 import { SearchModule } from './modules/search/search.module';
 import { CliModule } from './modules/cli/cli.module';
+import { BrowserModule } from './modules/browser/browser.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { CliModule } from './modules/cli/cli.module';
     AnalyticsModule,
     SchedulerModule,
     CliModule,
+    BrowserModule,
   ],
 })
 export class AppModule {}
