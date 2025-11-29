@@ -8,6 +8,8 @@ import { Strategy, StrategySchema } from './schemas/strategy.schema';
 import { CliHistory, CliHistorySchema } from './schemas/cli-history.schema';
 import { UserInterest, UserInterestSchema } from './schemas/user-interest.schema';
 import { CrawlTemplate, CrawlTemplateSchema } from './schemas/crawl-template.schema';
+import { ClaudeTask, ClaudeTaskSchema } from './schemas/claude-task.schema';
+import { SiteLogin, SiteLoginSchema } from './schemas/site-login.schema';
 import { ElasticsearchModule } from '../elasticsearch/elasticsearch.module';
 
 @Global()
@@ -21,6 +23,8 @@ import { ElasticsearchModule } from '../elasticsearch/elasticsearch.module';
       { name: CliHistory.name, schema: CliHistorySchema },
       { name: UserInterest.name, schema: UserInterestSchema },
       { name: CrawlTemplate.name, schema: CrawlTemplateSchema },
+      { name: ClaudeTask.name, schema: ClaudeTaskSchema },
+      { name: SiteLogin.name, schema: SiteLoginSchema },
     ]),
     ElasticsearchModule,
   ],
