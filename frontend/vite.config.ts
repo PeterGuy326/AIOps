@@ -10,6 +10,30 @@ export default defineConfig({
         target: 'http://localhost:3000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, '')
+      },
+      '/ai': {
+        target: 'http://localhost:3000',
+        changeOrigin: true
+      },
+      '/crawler': {
+        target: 'http://localhost:3000',
+        changeOrigin: true
+      },
+      '/search': {
+        target: 'http://localhost:3000',
+        changeOrigin: true
+      },
+      '/analytics': {
+        target: 'http://localhost:3000',
+        changeOrigin: true
+      },
+      '/publish': {
+        target: 'http://localhost:3000',
+        changeOrigin: true
+      },
+      '/browser': {
+        target: 'http://localhost:3000',
+        changeOrigin: true
       }
     }
   }

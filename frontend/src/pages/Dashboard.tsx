@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Card, Row, Col, Statistic, Button, Space, message, Table, Tag } from 'antd';
+import { Card, Row, Col, Statistic, Button, Space, message, Table, Tag, Modal } from 'antd';
 import {
   ArrowUpOutlined,
   SyncOutlined,
@@ -12,9 +12,11 @@ import {
   crawlerExecuteAll,
   crawlerScheduleTrigger,
   publisherPublishBatch,
-  aiGetQueueStatus,
   searchTrending,
 } from '../api';
+import ClaudeTaskMonitor from '../components/ClaudeTaskMonitor';
+import ClaudeTaskDetail from '../components/ClaudeTaskDetail';
+import ClaudeTaskHistory from '../components/ClaudeTaskHistory';
 
 const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(false);
@@ -24,22 +26,24 @@ const Dashboard: React.FC = () => {
     avgEngagement: 0,
     publishRate: 0,
   });
-  const [queueStatus, setQueueStatus] = useState<any>(null);
   const [trendingContent, setTrendingContent] = useState<any[]>([]);
+  const [historyModalVisible, setHistoryModalVisible] = useState(false);
+
+  // 任务详情状态
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [detailModalVisible, setDetailModalVisible] = useState(false);
 
   const loadStats = async () => {
     try {
       setLoading(true);
-      const [perfRes, queueRes, trendingRes]: any[] = await Promise.all([
+      const [perfRes, trendingRes]: any[] = await Promise.all([
         analyticsGetPerformance(7).catch(() => ({ metrics: {} })),
-        aiGetQueueStatus().catch(() => ({})),
         searchTrending(7, 10).catch(() => ({ hits: [] })),
       ]);
 
       if (perfRes.metrics) {
         setStats(perfRes.metrics);
       }
-      setQueueStatus(queueRes);
       setTrendingContent(trendingRes.hits || []);
     } catch (error) {
       message.error('加载数据失败');
@@ -55,7 +59,7 @@ const Dashboard: React.FC = () => {
   const triggerCrawl = async () => {
     try {
       message.loading('正在触发全平台爬取...', 0);
-      const res: any = await crawlerExecuteAll();
+      const res: any = await crawlerExecuteAll({ streaming: true }); // 使用流式模式
       message.destroy();
       message.success(`爬取完成: ${res.totalArticles || 0} 篇文章`);
       loadStats();
@@ -88,6 +92,18 @@ const Dashboard: React.FC = () => {
       message.destroy();
       message.error('发布失败');
     }
+  };
+
+  // 查看任务详情
+  const handleViewTaskDetail = (taskId: string) => {
+    setSelectedTaskId(taskId);
+    setDetailModalVisible(true);
+  };
+
+  // 关闭任务详情
+  const handleCloseDetail = () => {
+    setDetailModalVisible(false);
+    setSelectedTaskId(null);
   };
 
   const trendingColumns = [
@@ -168,29 +184,6 @@ const Dashboard: React.FC = () => {
         </Col>
       </Row>
 
-      {queueStatus && (
-        <Card title="AI 队列状态" style={{ marginBottom: 24 }}>
-          <Row gutter={16}>
-            <Col span={6}>
-              <Statistic title="队列长度" value={queueStatus.queueLength || 0} />
-            </Col>
-            <Col span={6}>
-              <Statistic
-                title="活跃 Worker"
-                value={queueStatus.workers?.filter((w: any) => w.busy).length || 0}
-                suffix={`/ ${queueStatus.workers?.length || 0}`}
-              />
-            </Col>
-            <Col span={6}>
-              <Statistic title="已完成任务" value={queueStatus.stats?.completedTasks || 0} />
-            </Col>
-            <Col span={6}>
-              <Statistic title="失败任务" value={queueStatus.stats?.failedTasks || 0} />
-            </Col>
-          </Row>
-        </Card>
-      )}
-
       <Card title="快速操作" style={{ marginBottom: 24 }}>
         <Space size="large">
           <Button
@@ -222,6 +215,14 @@ const Dashboard: React.FC = () => {
         </Space>
       </Card>
 
+      {/* Claude 任务监控 - 新组件 */}
+      <div style={{ marginBottom: 24 }}>
+        <ClaudeTaskMonitor
+          onViewTaskDetail={handleViewTaskDetail}
+          onViewHistory={() => setHistoryModalVisible(true)}
+        />
+      </div>
+
       <Card title="热门内容 (近7天)">
         <Table
           dataSource={trendingContent}
@@ -232,6 +233,38 @@ const Dashboard: React.FC = () => {
           loading={loading}
         />
       </Card>
+
+      {/* 任务详情弹窗 */}
+      <Modal
+        open={detailModalVisible}
+        onCancel={handleCloseDetail}
+        footer={null}
+        width={1000}
+        style={{ top: 20 }}
+        destroyOnClose
+        title={null}
+        closable={false}
+        bodyStyle={{ padding: 0 }}
+      >
+        {selectedTaskId && (
+          <ClaudeTaskDetail
+            taskId={selectedTaskId}
+            onBack={handleCloseDetail}
+          />
+        )}
+      </Modal>
+
+      {/* 历史任务弹窗 */}
+      <Modal
+        title="Claude 任务历史"
+        open={historyModalVisible}
+        onCancel={() => setHistoryModalVisible(false)}
+        footer={null}
+        width={1200}
+        style={{ top: 20 }}
+      >
+        <ClaudeTaskHistory />
+      </Modal>
     </div>
   );
 };

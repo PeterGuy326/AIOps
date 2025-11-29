@@ -5,6 +5,7 @@ import {
   FileTextOutlined,
   BarChartOutlined,
   SettingOutlined,
+  LoginOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 
@@ -30,6 +31,11 @@ const MainLayout: React.FC = () => {
       key: '/analytics',
       icon: <BarChartOutlined />,
       label: '数据分析',
+    },
+    {
+      key: '/login-manager',
+      icon: <LoginOutlined />,
+      label: '登录管理',
     },
     {
       key: '/settings',

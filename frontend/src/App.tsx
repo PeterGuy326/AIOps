@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard';
 import Content from './pages/Content';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
+import LoginManager from './pages/LoginManager';
 
 const App: React.FC = () => {
   return (
@@ -16,6 +17,7 @@ const App: React.FC = () => {
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="content" element={<Content />} />
           <Route path="analytics" element={<Analytics />} />
+          <Route path="login-manager" element={<LoginManager />} />
           <Route path="settings" element={<Settings />} />
         </Route>
       </Routes>
