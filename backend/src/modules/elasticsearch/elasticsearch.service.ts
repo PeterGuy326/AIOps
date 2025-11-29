@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { Client } from '@elastic/elasticsearch';
 import type { SearchHit, AggregationsTermsAggregateBase } from '@elastic/elasticsearch/lib/api/types';
 
-interface TermsBucket {
+export interface TermsBucket {
   key: string;
   doc_count: number;
 }
