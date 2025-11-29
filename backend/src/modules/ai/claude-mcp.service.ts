@@ -88,15 +88,16 @@ export class ClaudeMCPService implements OnModuleInit {
   /**
    * 执行 Claude 命令（通用方法）
    * @param prompt 提示词
+   * @param streaming 是否流式输出（前端需要实时日志时设为 true）
    * @returns Claude 的响应文本
    */
-  async execute(prompt: string): Promise<string> {
+  async execute(prompt: string, streaming: boolean = false): Promise<string> {
     if (!this.isReady()) {
       throw new Error('Claude 服务未连接');
     }
 
     try {
-      const result = await this.queueService.submitTask(prompt);
+      const result = await this.queueService.submitTask(prompt, streaming);
       return result;
     } catch (error) {
       this.logger.error('Claude execution failed:', error.message);
@@ -112,6 +113,7 @@ export class ClaudeMCPService implements OnModuleInit {
     excerpt: string,
     metadata: any,
     strategy: any,
+    streaming: boolean = false,
   ): Promise<MCPAnalysisResult> {
     if (!this.isReady()) {
       throw new Error('Claude 服务未连接');
@@ -148,7 +150,7 @@ export class ClaudeMCPService implements OnModuleInit {
 }
 `;
 
-      const response = await this.queueService.submitTask(prompt);
+      const response = await this.queueService.submitTask(prompt, streaming);
       return this.parseJSON(response, {
         relevance: 0.5,
         quality: 0.5,
@@ -171,12 +173,15 @@ export class ClaudeMCPService implements OnModuleInit {
   /**
    * 使用 Claude 对内容进行智能分类
    */
-  async classifyContent(content: {
-    title: string;
-    content: string;
-    author?: string;
-    tags?: string[];
-  }): Promise<MCPContentClassification> {
+  async classifyContent(
+    content: {
+      title: string;
+      content: string;
+      author?: string;
+      tags?: string[];
+    },
+    streaming: boolean = false,
+  ): Promise<MCPContentClassification> {
     if (!this.isReady()) {
       throw new Error('Claude 服务未连接');
     }
@@ -209,7 +214,7 @@ export class ClaudeMCPService implements OnModuleInit {
 }
 `;
 
-      const response = await this.queueService.submitTask(prompt);
+      const response = await this.queueService.submitTask(prompt, streaming);
       return this.parseJSON(response, {
         category: '未分类',
         subcategories: [],
@@ -238,6 +243,7 @@ export class ClaudeMCPService implements OnModuleInit {
     historicalData: any[],
     performanceMetrics: any,
     objectives: string[],
+    streaming: boolean = false,
   ): Promise<MCPStrategyRecommendation> {
     if (!this.isReady()) {
       throw new Error('Claude 服务未连接');
@@ -272,7 +278,7 @@ ${JSON.stringify(performanceMetrics, null, 2)}
 }
 `;
 
-      const response = await this.queueService.submitTask(prompt);
+      const response = await this.queueService.submitTask(prompt, streaming);
       return this.parseJSON(response, {
         keywords: ['AI', '科技'],
         platforms: ['zhihu'],
@@ -299,6 +305,7 @@ ${JSON.stringify(performanceMetrics, null, 2)}
     rawContent: string,
     targetPlatform: string,
     style: string,
+    streaming: boolean = false,
   ): Promise<{ title: string; content: string; tags: string[] }> {
     if (!this.isReady()) {
       throw new Error('Claude 服务未连接');
@@ -326,7 +333,7 @@ ${rawContent.substring(0, 2000)}
 }
 `;
 
-      const response = await this.queueService.submitTask(prompt);
+      const response = await this.queueService.submitTask(prompt, streaming);
       return this.parseJSON(response, {
         title: rawContent.substring(0, 50),
         content: rawContent,
@@ -345,7 +352,7 @@ ${rawContent.substring(0, 2000)}
   /**
    * 调用工具（通用方法）- 兼容原有接口
    */
-  async callTool(toolName: string, args: Record<string, any> = {}): Promise<any> {
+  async callTool(toolName: string, args: Record<string, any> = {}, streaming: boolean = false): Promise<any> {
     if (!this.isReady()) {
       throw new Error('Claude 服务未连接');
     }
@@ -357,6 +364,7 @@ ${rawContent.substring(0, 2000)}
       if (toolName === 'ask_claude') {
         const response = await this.queueService.submitTask(
           args.prompt || args.question || '',
+          streaming,
         );
         return {
           content: [

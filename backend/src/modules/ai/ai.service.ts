@@ -26,7 +26,13 @@ export class AIService {
     private claudeMCPService: ClaudeMCPService,
   ) {}
 
-  async generateContent(rawData: any[], strategy: any): Promise<GeneratedContent[]> {
+  /**
+   * 生成内容
+   * @param rawData 原始数据
+   * @param strategy 策略
+   * @param streaming 是否流式输出
+   */
+  async generateContent(rawData: any[], strategy: any, streaming: boolean = false): Promise<GeneratedContent[]> {
     try {
       this.logger.log('使用本地 MCP 生成内容...');
 
@@ -63,7 +69,7 @@ ${JSON.stringify(strategy, null, 2)}
 只返回JSON数组，不要其他内容。
       `;
 
-      const response = await this.claudeMCPService.execute(prompt);
+      const response = await this.claudeMCPService.execute(prompt, streaming);
 
       // 提取 JSON
       const jsonMatch = response.match(/\[[\s\S]*\]/);
@@ -80,7 +86,12 @@ ${JSON.stringify(strategy, null, 2)}
     }
   }
 
-  async generateStrategy(analyticsData: any): Promise<Strategy> {
+  /**
+   * 生成策略
+   * @param analyticsData 分析数据
+   * @param streaming 是否流式输出
+   */
+  async generateStrategy(analyticsData: any, streaming: boolean = false): Promise<Strategy> {
     try {
       this.logger.log('使用本地 MCP 生成策略...');
 
@@ -112,7 +123,7 @@ ${JSON.stringify(analyticsData, null, 2)}
 只返回JSON对象，不要其他内容。
       `;
 
-      const response = await this.claudeMCPService.execute(prompt);
+      const response = await this.claudeMCPService.execute(prompt, streaming);
 
       // 提取 JSON
       const jsonMatch = response.match(/\{[\s\S]*\}/);
@@ -140,7 +151,12 @@ ${JSON.stringify(analyticsData, null, 2)}
     }
   }
 
-  async analyzeContent(content: string): Promise<any> {
+  /**
+   * 分析内容
+   * @param content 内容
+   * @param streaming 是否流式输出
+   */
+  async analyzeContent(content: string, streaming: boolean = false): Promise<any> {
     try {
       this.logger.log('使用本地 MCP 分析内容...');
 
@@ -161,7 +177,7 @@ ${content}
 }
       `;
 
-      const response = await this.claudeMCPService.execute(prompt);
+      const response = await this.claudeMCPService.execute(prompt, streaming);
 
       const jsonMatch = response.match(/\{[\s\S]*\}/);
       if (jsonMatch) {

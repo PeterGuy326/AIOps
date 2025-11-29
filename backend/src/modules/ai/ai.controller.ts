@@ -1,7 +1,9 @@
-import { Controller, Post, Body, Get } from '@nestjs/common';
+import { Controller, Post, Body, Get, Param, Sse, Delete, MessageEvent, Query } from '@nestjs/common';
+import { Observable, fromEvent, map, merge, interval } from 'rxjs';
 import { AIService } from './ai.service';
 import { SmartCrawlerService } from '../crawler/smart-crawler.service';
 import { ClaudeMCPService } from './claude-mcp.service';
+import { ClaudeShellQueueService } from './claude-shell-queue.service';
 
 /**
  * AI 控制器 - 三段式 RESTful API
@@ -13,17 +15,20 @@ export class AIController {
     private aiService: AIService,
     private smartCrawlerService: SmartCrawlerService,
     private mcpService: ClaudeMCPService,
+    private queueService: ClaudeShellQueueService,
   ) {}
 
   /**
    * POST /ai/content/generate
    * 生成内容
+   * @param streaming 是否流式输出实时日志
    */
   @Post('content/generate')
-  async generateContent(@Body() data: { rawData: any[]; strategy: any }) {
+  async generateContent(@Body() data: { rawData: any[]; strategy: any; streaming?: boolean }) {
     const contents = await this.aiService.generateContent(
       data.rawData,
       data.strategy,
+      data.streaming || false,
     );
     return {
       message: '内容生成成功',
@@ -35,10 +40,11 @@ export class AIController {
   /**
    * POST /ai/content/analyze
    * 分析内容
+   * @param streaming 是否流式输出实时日志
    */
   @Post('content/analyze')
-  async analyzeContent(@Body() data: { content: string }) {
-    const analysis = await this.aiService.analyzeContent(data.content);
+  async analyzeContent(@Body() data: { content: string; streaming?: boolean }) {
+    const analysis = await this.aiService.analyzeContent(data.content, data.streaming || false);
     return {
       message: '内容分析成功',
       analysis,
@@ -48,6 +54,7 @@ export class AIController {
   /**
    * POST /ai/strategy/generate
    * 生成策略
+   * @param streaming 是否流式输出实时日志
    */
   @Post('strategy/generate')
   async generateStrategy(
@@ -56,18 +63,21 @@ export class AIController {
       timeframe?: number;
       platforms?: string[];
       objectives?: string[];
+      streaming?: boolean;
     },
   ) {
     const {
       timeframe = 7,
       platforms = ['zhihu', 'wechat', 'news'],
       objectives = ['trending', 'quality', 'engagement'],
+      streaming = false,
     } = data;
 
     const strategy = await this.smartCrawlerService.generateAIStrategy(
       timeframe,
       platforms,
       objectives,
+      streaming,
     );
 
     return {
@@ -306,13 +316,280 @@ export class AIController {
 
   /**
    * GET /ai/queue/status
-   * 查看队列状态
+   * 查看队列状态（简单版本）
    */
   @Get('queue/status')
   async getQueueStatus() {
     return {
       message: '队列状态查询成功',
       ...this.mcpService.getQueueStatus(),
+    };
+  }
+
+  /**
+   * GET /ai/monitor/status
+   * 获取完整的监控状态（统一视图）
+   * 包含：服务状态、队列、Workers、运行中任务、最近任务、统计
+   */
+  @Get('monitor/status')
+  async getMonitorStatus() {
+    return {
+      message: '监控状态查询成功',
+      timestamp: Date.now(),
+      ...this.queueService.getMonitorStatus(),
+    };
+  }
+
+  /**
+   * GET /ai/process/list
+   * 获取所有进程信息
+   */
+  @Get('process/list')
+  async getProcessList() {
+    const processes = this.queueService.getAllProcessInfos();
+    const running = processes.filter(p => p.status === 'running');
+    const completed = processes.filter(p => p.status === 'completed');
+    const failed = processes.filter(p => p.status === 'failed' || p.status === 'timeout');
+
+    return {
+      message: '进程列表查询成功',
+      total: processes.length,
+      running: running.length,
+      completed: completed.length,
+      failed: failed.length,
+      processes: processes.map(p => ({
+        taskId: p.taskId,
+        workerId: p.workerId,
+        pid: p.pid,
+        status: p.status,
+        startTime: p.startTime,
+        duration: p.status === 'running' ? Date.now() - p.startTime : undefined,
+        prompt: p.prompt,
+        logCount: p.logs.length,
+        error: p.error,
+      })),
+    };
+  }
+
+  /**
+   * GET /ai/process/running
+   * 获取正在运行的进程
+   */
+  @Get('process/running')
+  async getRunningProcesses() {
+    const processes = this.queueService.getRunningProcesses();
+
+    return {
+      message: '运行中进程查询成功',
+      count: processes.length,
+      processes: processes.map(p => ({
+        taskId: p.taskId,
+        workerId: p.workerId,
+        pid: p.pid,
+        startTime: p.startTime,
+        duration: Date.now() - p.startTime,
+        prompt: p.prompt,
+        logCount: p.logs.length,
+      })),
+    };
+  }
+
+  /**
+   * GET /ai/process/logs/:taskId
+   * 获取指定任务的日志
+   */
+  @Get('process/logs/:taskId')
+  async getProcessLogs(@Param('taskId') taskId: string) {
+    const processInfo = this.queueService.getProcessInfo(taskId);
+
+    if (!processInfo) {
+      return {
+        message: '任务不存在',
+        taskId,
+        logs: [],
+      };
+    }
+
+    return {
+      message: '日志查询成功',
+      taskId: processInfo.taskId,
+      workerId: processInfo.workerId,
+      pid: processInfo.pid,
+      status: processInfo.status,
+      startTime: processInfo.startTime,
+      prompt: processInfo.prompt,
+      result: processInfo.result,
+      error: processInfo.error,
+      logs: processInfo.logs,
+    };
+  }
+
+  /**
+   * SSE /ai/process/stream
+   * 实时日志流（所有任务）
+   */
+  @Sse('process/stream')
+  streamAllLogs(): Observable<MessageEvent> {
+    const emitter = this.queueService.getLogEmitter();
+
+    // 心跳保持连接
+    const heartbeat$ = interval(30000).pipe(
+      map(() => ({
+        data: { type: 'heartbeat', timestamp: Date.now() },
+      } as MessageEvent))
+    );
+
+    // 日志事件
+    const logs$ = fromEvent(emitter, 'log').pipe(
+      map((event: { taskId: string; log: any }) => ({
+        data: {
+          type: 'log',
+          taskId: event.taskId,
+          log: event.log,
+        },
+      } as MessageEvent))
+    );
+
+    return merge(heartbeat$, logs$);
+  }
+
+  /**
+   * SSE /ai/process/stream/:taskId
+   * 实时日志流（指定任务）
+   */
+  @Sse('process/stream/:taskId')
+  streamTaskLogs(@Param('taskId') taskId: string): Observable<MessageEvent> {
+    const emitter = this.queueService.getLogEmitter();
+    const processInfo = this.queueService.getProcessInfo(taskId);
+
+    // 心跳保持连接
+    const heartbeat$ = interval(30000).pipe(
+      map(() => ({
+        data: { type: 'heartbeat', timestamp: Date.now() },
+      } as MessageEvent))
+    );
+
+    // 发送历史日志
+    const history$ = new Observable<MessageEvent>(subscriber => {
+      if (processInfo) {
+        // 先发送任务信息
+        subscriber.next({
+          data: {
+            type: 'init',
+            taskId: processInfo.taskId,
+            workerId: processInfo.workerId,
+            pid: processInfo.pid,
+            status: processInfo.status,
+            startTime: processInfo.startTime,
+          },
+        } as MessageEvent);
+
+        // 发送历史日志
+        processInfo.logs.forEach(log => {
+          subscriber.next({
+            data: {
+              type: 'log',
+              taskId,
+              log,
+            },
+          } as MessageEvent);
+        });
+      }
+      subscriber.complete();
+    });
+
+    // 实时日志
+    const logs$ = fromEvent(emitter, `log:${taskId}`).pipe(
+      map((log: any) => ({
+        data: {
+          type: 'log',
+          taskId,
+          log,
+        },
+      } as MessageEvent))
+    );
+
+    return merge(history$, heartbeat$, logs$);
+  }
+
+  /**
+   * DELETE /ai/process/kill/:taskId
+   * 终止指定任务
+   */
+  @Delete('process/kill/:taskId')
+  async killProcess(@Param('taskId') taskId: string) {
+    const killed = this.queueService.killTask(taskId);
+
+    return {
+      message: killed ? '任务终止成功' : '任务不存在或已结束',
+      taskId,
+      killed,
+    };
+  }
+
+  // ==================== 历史任务查询 ====================
+
+  /**
+   * GET /ai/task/history
+   * 查询历史任务列表
+   */
+  @Get('task/history')
+  async getTaskHistory(
+    @Query('status') status?: string,
+    @Query('limit') limit?: string,
+    @Query('skip') skip?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    const result = await this.queueService.getTaskHistory({
+      status,
+      limit: limit ? parseInt(limit, 10) : 50,
+      skip: skip ? parseInt(skip, 10) : 0,
+      startDate: startDate ? new Date(startDate) : undefined,
+      endDate: endDate ? new Date(endDate) : undefined,
+    });
+
+    return {
+      message: '历史任务查询成功',
+      ...result,
+    };
+  }
+
+  /**
+   * GET /ai/task/detail/:taskId
+   * 获取任务详情（包含完整日志）
+   */
+  @Get('task/detail/:taskId')
+  async getTaskDetail(@Param('taskId') taskId: string) {
+    const task = await this.queueService.getTaskDetail(taskId);
+
+    if (!task) {
+      return {
+        message: '任务不存在',
+        taskId,
+        task: null,
+      };
+    }
+
+    return {
+      message: '任务详情查询成功',
+      task,
+    };
+  }
+
+  /**
+   * GET /ai/task/stats
+   * 获取任务统计
+   */
+  @Get('task/stats')
+  async getTaskStats(@Query('days') days?: string) {
+    const stats = await this.queueService.getTaskStats(
+      days ? parseInt(days, 10) : 7,
+    );
+
+    return {
+      message: '任务统计查询成功',
+      stats,
     };
   }
 }
