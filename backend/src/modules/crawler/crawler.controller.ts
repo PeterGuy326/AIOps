@@ -38,14 +38,16 @@ export class CrawlerController {
   /**
    * POST /crawler/task/execute
    * 立即执行单平台爬取（同步）
+   * @param streaming 是否流式输出实时日志
    */
   @Post('task/execute')
   async executeTask(
-    @Body() body: { platform: PlatformType; keyword?: string },
+    @Body() body: { platform: PlatformType; keyword?: string; streaming?: boolean },
   ) {
     const result = await this.crawlerService.crawlPlatform(
       body.platform,
       body.keyword,
+      body.streaming || false,
     );
     return {
       message: '爬取完成',
@@ -59,10 +61,11 @@ export class CrawlerController {
   /**
    * POST /crawler/task/execute-all
    * 执行全平台爬取
+   * @param streaming 是否流式输出实时日志
    */
   @Post('task/execute-all')
-  async executeAllTasks(@Body() body: { keywords?: string[] }) {
-    const results = await this.crawlerService.crawlAllPlatforms(body.keywords);
+  async executeAllTasks(@Body() body: { keywords?: string[]; streaming?: boolean }) {
+    const results = await this.crawlerService.crawlAllPlatforms(body.keywords, body.streaming || false);
 
     return {
       message: '全平台爬取完成',

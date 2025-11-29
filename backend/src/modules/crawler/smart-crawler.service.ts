@@ -129,8 +129,11 @@ export class SmartCrawlerService {
 
   /**
    * 智能爬取 - 让 Claude 自己想办法
+   * @param platform 平台名称
+   * @param keyword 搜索关键词
+   * @param streaming 是否流式输出（前端实时日志）
    */
-  async crawl(platform: string, keyword?: string): Promise<SmartCrawlResult> {
+  async crawl(platform: string, keyword?: string, streaming: boolean = false): Promise<SmartCrawlResult> {
     // 检查 MCP 服务状态
     if (!this.mcpService.isReady()) {
       return {
@@ -197,7 +200,7 @@ claude mcp add chrome-devtools -- npx chrome-devtools-mcp@latest
       const result = await this.mcpService.callTool('ask_claude', {
         prompt,
         model: 'claude-sonnet-4-5',
-      });
+      }, streaming);
 
       // 更新请求计数
       this.requestCount++;
@@ -480,11 +483,13 @@ ${this.getPlatformSpecificInstructions(platform)}
 
   /**
    * 生成 AI 策略建议
+   * @param streaming 是否流式输出
    */
   async generateAIStrategy(
     timeframe: number,
     platforms: string[],
     objectives: string[],
+    streaming: boolean = false,
   ): Promise<AIStrategySuggestion> {
     if (!this.mcpService.isReady()) {
       // 返回默认策略
@@ -514,7 +519,7 @@ ${this.getPlatformSpecificInstructions(platform)}
       const result = await this.mcpService.callTool('ask_claude', {
         prompt,
         model: 'claude-sonnet-4-5',
-      });
+      }, streaming);
 
       const strategy = this.parseStrategyResponse(result);
       this.logger.log('✅ AI 策略生成完成');

@@ -36,11 +36,17 @@ export class CrawlerService {
     });
   }
 
-  async crawlPlatform(platform: PlatformType, keyword?: string): Promise<CrawlResult> {
+  /**
+   * 爬取单平台
+   * @param platform 平台
+   * @param keyword 关键词
+   * @param streaming 是否流式输出（前端实时日志）
+   */
+  async crawlPlatform(platform: PlatformType, keyword?: string, streaming: boolean = false): Promise<CrawlResult> {
     try {
       this.logger.log(`🚀 爬取 ${platform} ${keyword || ''}`);
 
-      const result = await this.smartCrawler.crawl(platform, keyword);
+      const result = await this.smartCrawler.crawl(platform, keyword, streaming);
 
       if (result.success && result.articles.length > 0) {
         await this.saveCrawledData(result);
@@ -65,13 +71,18 @@ export class CrawlerService {
     }
   }
 
-  async crawlAllPlatforms(keywords?: string[]): Promise<CrawlResult[]> {
+  /**
+   * 爬取全平台
+   * @param keywords 关键词列表
+   * @param streaming 是否流式输出
+   */
+  async crawlAllPlatforms(keywords?: string[], streaming: boolean = false): Promise<CrawlResult[]> {
     const platforms: PlatformType[] = ['zhihu', 'wechat', 'weibo'];
     const results: CrawlResult[] = [];
 
     for (const platform of platforms) {
       const keyword = keywords?.[Math.floor(Math.random() * keywords.length)];
-      const result = await this.crawlPlatform(platform, keyword);
+      const result = await this.crawlPlatform(platform, keyword, streaming);
       results.push(result);
       await this.delay(3000);
     }
