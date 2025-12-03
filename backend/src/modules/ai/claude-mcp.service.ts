@@ -385,6 +385,45 @@ ${rawContent.substring(0, 2000)}
   }
 
   /**
+   * 调用工具并返回日志（用于前端展示 AI 思考过程）
+   */
+  async callToolWithLogs(toolName: string, args: Record<string, any> = {}, streaming: boolean = true): Promise<{
+    content: any[];
+    logs: any[];
+    taskId: string;
+  }> {
+    if (!this.isReady()) {
+      throw new Error('Claude 服务未连接');
+    }
+
+    try {
+      this.logger.debug(`调用 Claude (with logs): ${toolName}`, args);
+
+      if (toolName === 'ask_claude') {
+        const { result, logs, taskId } = await this.queueService.submitTaskWithLogs(
+          args.prompt || args.question || '',
+          streaming,
+        );
+        return {
+          content: [
+            {
+              type: 'text',
+              text: result,
+            },
+          ],
+          logs,
+          taskId,
+        };
+      }
+
+      throw new Error(`不支持的工具: ${toolName}`);
+    } catch (error) {
+      this.logger.error(`调用 Claude 失败 (${toolName}):`, error);
+      throw error;
+    }
+  }
+
+  /**
    * 列出所有可用的工具（兼容接口）
    */
   async listTools(): Promise<any[]> {

@@ -1,81 +1,90 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as net from 'net';
-import { SiteLogin, SiteLoginDocument } from '../database/schemas/site-login.schema';
+import { SiteLogin, SiteLoginDocument, SHARED_CHROME_USER_DATA_DIR } from '../database/schemas/site-login.schema';
+import { ClaudeShellQueueService } from '../ai/claude-shell-queue.service';
 
 /**
  * 平台登录检测配置
+ * 所有平台默认使用共享的 Chrome 配置（用户真实配置）
+ *
+ * 登录检测仅使用 Cookie 方式，比 CSS 选择器更可靠
  */
 export const PLATFORM_CONFIGS: Record<string, {
   name: string;
   checkUrl: string;
   loginUrl: string;
-  loggedInSelector?: string;
-  loggedOutSelector?: string;
-  usernameSelector?: string;
-  avatarSelector?: string;
+  domain: string; // Cookie 所属域名
+  loginCookies: string[]; // 登录态 Cookie 名称列表（存在任一即为已登录）
+  loginValidityHours?: number; // 登录有效期（小时）
 }> = {
   zhihu: {
     name: '知乎',
+    domain: '.zhihu.com',
     checkUrl: 'https://www.zhihu.com/',
     loginUrl: 'https://www.zhihu.com/signin',
-    loggedInSelector: '.AppHeader-profile',
-    loggedOutSelector: '.SignContainer-content',
-    usernameSelector: '.AppHeader-profile img',
-    avatarSelector: '.AppHeader-profile img',
+    loginCookies: ['z_c0', 'KLBRSID'],
+    loginValidityHours: 24 * 30,
   },
   xiaohongshu: {
     name: '小红书',
+    domain: '.xiaohongshu.com',
     checkUrl: 'https://www.xiaohongshu.com/',
     loginUrl: 'https://www.xiaohongshu.com/',
-    loggedInSelector: '.user-info',
-    loggedOutSelector: '.login-btn',
+    loginCookies: ['customer-sso-sid', 'customerClientId', 'web_session'],
+    loginValidityHours: 24 * 7,
   },
   weixin: {
     name: '微信公众号',
+    domain: '.qq.com',
     checkUrl: 'https://mp.weixin.qq.com/',
     loginUrl: 'https://mp.weixin.qq.com/',
-    loggedInSelector: '.weui-desktop-account',
-    loggedOutSelector: '.login__type__container',
+    loginCookies: ['slave_sid', 'slave_user', 'bizuin'],
+    loginValidityHours: 24,
   },
   weibo: {
     name: '微博',
+    domain: '.weibo.com',
     checkUrl: 'https://weibo.com/',
     loginUrl: 'https://weibo.com/login.php',
-    loggedInSelector: '.woo-avatar-img',
-    loggedOutSelector: '.LoginCard_wrap',
+    loginCookies: ['SUB', 'SUBP', 'login_sid_t'],
+    loginValidityHours: 24 * 7,
   },
   bilibili: {
     name: 'B站',
+    domain: '.bilibili.com',
     checkUrl: 'https://www.bilibili.com/',
     loginUrl: 'https://passport.bilibili.com/login',
-    loggedInSelector: '.header-avatar-wrap',
-    loggedOutSelector: '.header-login-entry',
+    loginCookies: ['SESSDATA', 'bili_jct', 'DedeUserID'],
+    loginValidityHours: 24 * 30,
   },
   douyin: {
     name: '抖音',
+    domain: '.douyin.com',
     checkUrl: 'https://www.douyin.com/',
     loginUrl: 'https://www.douyin.com/',
-    loggedInSelector: '.avatar-icon',
-    loggedOutSelector: '.login-guide',
+    loginCookies: ['sessionid', 'sessionid_ss', 'passport_csrf_token'],
+    loginValidityHours: 24 * 7,
   },
   toutiao: {
     name: '今日头条',
+    domain: '.toutiao.com',
     checkUrl: 'https://www.toutiao.com/',
     loginUrl: 'https://www.toutiao.com/',
-    loggedInSelector: '.avatar-wrap',
-    loggedOutSelector: '.login-button',
+    loginCookies: ['sso_uid_tt', 'sessionid', 'passport_csrf_token'],
+    loginValidityHours: 24 * 7,
   },
   juejin: {
     name: '掘金',
+    domain: '.juejin.cn',
     checkUrl: 'https://juejin.cn/',
     loginUrl: 'https://juejin.cn/login',
-    loggedInSelector: '.avatar',
-    loggedOutSelector: '.login-button',
+    loginCookies: ['sessionid', 'sessionid_ss'],
+    loginValidityHours: 24 * 30,
   },
 };
 
@@ -107,12 +116,15 @@ export class BrowserSessionService implements OnModuleInit, OnModuleDestroy {
   // 活跃的 Chrome 会话
   private sessions: Map<string, ChromeSession> = new Map();
 
-  // 主 Chrome 实例（用于手动登录）
+  // 主 Chrome 实例（用于手动登录）- 已废弃，改用 ClaudeShellQueueService 统一管理
   private mainChromeProcess: ChildProcess | null = null;
-  private readonly MAIN_CHROME_PORT = 9222;
+  // 使用独立端口 9223，避免与用户日常使用的 Chrome 冲突
+  private readonly MAIN_CHROME_PORT = 9223;
 
   constructor(
     @InjectModel(SiteLogin.name) private siteLoginModel: Model<SiteLoginDocument>,
+    @Inject(forwardRef(() => ClaudeShellQueueService))
+    private claudeQueueService: ClaudeShellQueueService,
   ) {}
 
   async onModuleInit() {
@@ -140,28 +152,51 @@ export class BrowserSessionService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * 初始化平台登录配置到数据库
+   * 所有平台默认使用共享的 Chrome 配置（用户真实配置）
+   * 每次启动时同步更新配置（确保代码中的最新选择器生效）
    */
   private async initPlatformConfigs() {
     for (const [platform, config] of Object.entries(PLATFORM_CONFIGS)) {
       const existing = await this.siteLoginModel.findOne({ platform });
       if (!existing) {
-        const userDataDir = path.join(this.BASE_DATA_DIR, platform);
+        // 所有平台默认使用共享的 Chrome 用户配置目录
         await this.siteLoginModel.create({
           platform,
           platformName: config.name,
           status: 'logged_out',
-          userDataDir,
+          userDataDir: SHARED_CHROME_USER_DATA_DIR, // 使用共享目录
+          useSharedProfile: true, // 默认使用共享配置
+          loginValidityHours: config.loginValidityHours || 24 * 7,
           checkConfig: {
             checkUrl: config.checkUrl,
             loginUrl: config.loginUrl,
-            loggedInSelector: config.loggedInSelector,
-            loggedOutSelector: config.loggedOutSelector,
-            usernameSelector: config.usernameSelector,
-            avatarSelector: config.avatarSelector,
+            domain: config.domain,
+            loginCookies: config.loginCookies,
           },
           enabled: true,
         });
-        this.logger.log(`📝 初始化平台配置: ${config.name}`);
+        this.logger.log(`📝 初始化平台配置: ${config.name} (共享模式)`);
+      } else {
+        // 已存在的平台：同步更新配置（确保代码中的最新 Cookie 配置生效）
+        const updateData: any = {
+          checkConfig: {
+            checkUrl: config.checkUrl,
+            loginUrl: config.loginUrl,
+            domain: config.domain,
+            loginCookies: config.loginCookies,
+          },
+          loginValidityHours: config.loginValidityHours || existing.loginValidityHours || 24 * 7,
+        };
+
+        // 如果之前使用独立目录（/tmp/），迁移到共享模式
+        if (!existing.useSharedProfile || existing.userDataDir.startsWith('/tmp/')) {
+          updateData.userDataDir = SHARED_CHROME_USER_DATA_DIR;
+          updateData.useSharedProfile = true;
+          this.logger.log(`🔄 迁移平台配置到共享模式: ${config.name}`);
+        }
+
+        await this.siteLoginModel.updateOne({ platform }, { $set: updateData });
+        this.logger.log(`🔄 同步平台配置: ${config.name}`);
       }
     }
   }
@@ -402,89 +437,66 @@ export class BrowserSessionService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * 启动主 Chrome（有界面，用于手动登录）
+   * 现在统一使用 ClaudeShellQueueService 管理 Chrome 实例
+   * 会自动跳转到目标平台的登录页面
    */
   async startMainChrome(platform?: string): Promise<{ port: number; url: string }> {
-    // 如果已经运行，直接返回
-    if (await this.isChromeDebugReady(this.MAIN_CHROME_PORT)) {
-      const url = platform
-        ? PLATFORM_CONFIGS[platform]?.loginUrl || 'about:blank'
-        : 'about:blank';
-      return { port: this.MAIN_CHROME_PORT, url };
-    }
-
-    const chromePath = this.getChromePath();
-    if (!chromePath) {
-      throw new Error('未找到 Chrome 浏览器');
-    }
-
-    // 使用指定平台的用户数据目录
+    // 确定用户数据目录和登录 URL
     let userDataDir = path.join(this.BASE_DATA_DIR, 'main');
+    let loginUrl = 'about:blank';
+
     if (platform) {
       const siteLogin = await this.siteLoginModel.findOne({ platform });
       if (siteLogin) {
         userDataDir = siteLogin.userDataDir;
+        // 优先使用数据库中的配置，否则使用内置配置
+        loginUrl = siteLogin.checkConfig?.loginUrl ||
+                   PLATFORM_CONFIGS[platform]?.loginUrl ||
+                   'about:blank';
+      } else if (PLATFORM_CONFIGS[platform]) {
+        loginUrl = PLATFORM_CONFIGS[platform].loginUrl;
       }
     }
 
     await fs.promises.mkdir(userDataDir, { recursive: true });
 
-    const startUrl = platform
-      ? PLATFORM_CONFIGS[platform]?.loginUrl || 'about:blank'
-      : 'about:blank';
+    this.logger.log(`🚀 启动主 Chrome (platform: ${platform || 'none'}, userDataDir: ${userDataDir}, loginUrl: ${loginUrl})`);
 
-    this.logger.log(`🚀 启动主 Chrome (端口: ${this.MAIN_CHROME_PORT})`);
+    // 检查是否需要切换 userDataDir
+    const currentDir = this.claudeQueueService.getCurrentChromeUserDataDir();
+    const needRestart = currentDir !== userDataDir;
 
-    this.mainChromeProcess = spawn(chromePath, [
-      `--remote-debugging-port=${this.MAIN_CHROME_PORT}`,
-      `--user-data-dir=${userDataDir}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      startUrl,
-    ], {
-      detached: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    // 使用 ClaudeShellQueueService 统一管理 Chrome
+    // 参数: userDataDir, forceRestart, headless=false（显示窗口供用户登录）, startUrl
+    const chromeStarted = await this.claudeQueueService.startChrome(
+      userDataDir,
+      needRestart,
+      false, // 显示窗口
+      loginUrl, // 直接打开登录页
+    );
 
-    this.mainChromeProcess.on('exit', () => {
-      this.logger.log('主 Chrome 已关闭');
-      this.mainChromeProcess = null;
-    });
-
-    // 等待就绪
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 500));
-      if (await this.isChromeDebugReady(this.MAIN_CHROME_PORT)) {
-        this.logger.log('✅ 主 Chrome 已就绪');
-        return { port: this.MAIN_CHROME_PORT, url: startUrl };
-      }
+    if (!chromeStarted) {
+      throw new Error('Chrome 启动失败');
     }
 
-    throw new Error('主 Chrome 启动超时');
+    // 如果 Chrome 已经在运行且 userDataDir 匹配，需要手动导航到登录页
+    if (!needRestart && loginUrl !== 'about:blank') {
+      await this.claudeQueueService.navigateToUrl(loginUrl);
+    }
+
+    // 标记主 Chrome 正在运行（用于状态查询）
+    this.mainChromeProcess = { pid: 1 } as any; // 占位符，实际进程由 ClaudeShellQueueService 管理
+
+    return { port: this.MAIN_CHROME_PORT, url: loginUrl };
   }
 
   /**
    * 停止主 Chrome
+   * 现在统一使用 ClaudeShellQueueService 管理 Chrome 实例
    */
   async stopMainChrome(): Promise<void> {
-    if (!this.mainChromeProcess) {
-      return;
-    }
-
     this.logger.log('🛑 停止主 Chrome');
-    this.mainChromeProcess.kill('SIGTERM');
-
-    await new Promise<void>((resolve) => {
-      const timeout = setTimeout(() => {
-        this.mainChromeProcess?.kill('SIGKILL');
-        resolve();
-      }, 5000);
-
-      this.mainChromeProcess?.on('exit', () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-    });
-
+    await this.claudeQueueService.stopChrome();
     this.mainChromeProcess = null;
   }
 
@@ -504,9 +516,10 @@ export class BrowserSessionService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * 检查主 Chrome 是否运行
+   * 现在统一使用 ClaudeShellQueueService 管理 Chrome 实例
    */
   isMainChromeRunning(): boolean {
-    return this.mainChromeProcess !== null;
+    return this.claudeQueueService.isChromeRunning();
   }
 
   /**

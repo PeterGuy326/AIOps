@@ -53,7 +53,6 @@ interface PlatformInfo {
   avatarUrl?: string;
   lastLoginTime?: string;
   lastCheckTime?: string;
-  lastError?: string;
   enabled: boolean;
   loginUrl?: string;
 }
@@ -62,9 +61,7 @@ const LoginManager: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [platforms, setPlatforms] = useState<PlatformInfo[]>([]);
   const [chromeRunning, setChromeRunning] = useState(false);
-  const [checkingPlatform, setCheckingPlatform] = useState<string | null>(null);
-  const [loginModalVisible, setLoginModalVisible] = useState(false);
-  const [currentPlatform, setCurrentPlatform] = useState<PlatformInfo | null>(null);
+  const [operatingPlatform, setOperatingPlatform] = useState<string | null>(null);
   const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [platformDetail, setPlatformDetail] = useState<any>(null);
   const [addModalVisible, setAddModalVisible] = useState(false);
@@ -96,26 +93,62 @@ const LoginManager: React.FC = () => {
   useEffect(() => {
     loadPlatforms();
     checkChromeStatus();
-    // 定时检查 Chrome 状态
     const timer = setInterval(checkChromeStatus, 5000);
     return () => clearInterval(timer);
   }, []);
 
-  // 检测单个平台登录状态
-  const handleCheckLogin = async (platform: string) => {
-    setCheckingPlatform(platform);
+  // 一键登录：检测 → 如果未登录则打开浏览器
+  const handleOneClickLogin = async (record: PlatformInfo) => {
+    const { platform, platformName } = record;
+    setOperatingPlatform(platform);
+
     try {
+      // 1. 先检测登录状态
+      message.loading({ content: `正在检测 ${platformName} 登录状态...`, key: 'login' });
+      const checkRes: any = await browserCheckLogin(platform);
+
+      if (checkRes.result?.isLoggedIn) {
+        // 已登录
+        message.success({ content: `${platformName} 已登录，无需重复登录`, key: 'login' });
+        loadPlatforms();
+        return;
+      }
+
+      // 2. 未登录，启动 Chrome 跳转到登录页
+      message.loading({ content: `正在打开 ${platformName} 登录页...`, key: 'login' });
+      const startRes: any = await browserStartMainChrome(platform);
+      setChromeRunning(true);
+
+      message.success({
+        content: `已打开 ${platformName} 登录页，请在浏览器中完成登录`,
+        key: 'login',
+        duration: 5,
+      });
+
+      loadPlatforms();
+    } catch (error: any) {
+      message.error({ content: error.message || '操作失败', key: 'login' });
+    } finally {
+      setOperatingPlatform(null);
+    }
+  };
+
+  // 检测单个平台登录状态
+  const handleCheckLogin = async (platform: string, platformName: string) => {
+    setOperatingPlatform(platform);
+    try {
+      message.loading({ content: `正在检测 ${platformName}...`, key: 'check' });
       const res: any = await browserCheckLogin(platform);
       if (res.result?.isLoggedIn) {
-        message.success(`${res.result.platform} 已登录`);
+        message.success({ content: `${platformName} 已登录`, key: 'check' });
       } else {
-        message.warning(`${res.result.platform} 未登录`);
+        message.warning({ content: `${platformName} 未登录`, key: 'check' });
       }
       loadPlatforms();
     } catch (error) {
-      message.error('检测失败');
+      message.error({ content: '检测失败', key: 'check' });
     } finally {
-      setCheckingPlatform(null);
+      setOperatingPlatform(null);
     }
   };
 
@@ -123,35 +156,14 @@ const LoginManager: React.FC = () => {
   const handleCheckAll = async () => {
     setLoading(true);
     try {
+      message.loading({ content: '正在检测所有平台...', key: 'checkAll' });
       await browserCheckAllLogin();
-      message.success('检测完成');
+      message.success({ content: '检测完成', key: 'checkAll' });
       loadPlatforms();
     } catch (error) {
-      message.error('检测失败');
+      message.error({ content: '检测失败', key: 'checkAll' });
     } finally {
       setLoading(false);
-    }
-  };
-
-  // 打开登录弹窗
-  const openLoginModal = (platform: PlatformInfo) => {
-    setCurrentPlatform(platform);
-    setLoginModalVisible(true);
-  };
-
-  // 启动 Chrome 进行登录
-  const handleStartLogin = async () => {
-    if (!currentPlatform) return;
-
-    try {
-      message.loading('正在启动 Chrome...', 0);
-      const res: any = await browserStartMainChrome(currentPlatform.platform);
-      message.destroy();
-      message.success(res.message || 'Chrome 已启动，请在浏览器中完成登录');
-      setChromeRunning(true);
-    } catch (error) {
-      message.destroy();
-      message.error('启动 Chrome 失败');
     }
   };
 
@@ -163,27 +175,6 @@ const LoginManager: React.FC = () => {
       setChromeRunning(false);
     } catch (error) {
       message.error('关闭 Chrome 失败');
-    }
-  };
-
-  // 验证登录状态
-  const handleVerifyLogin = async () => {
-    if (!currentPlatform) return;
-
-    setCheckingPlatform(currentPlatform.platform);
-    try {
-      const res: any = await browserCheckLogin(currentPlatform.platform);
-      if (res.result?.isLoggedIn) {
-        message.success('登录验证成功！');
-        setLoginModalVisible(false);
-        loadPlatforms();
-      } else {
-        message.warning('未检测到登录状态，请确认已在浏览器中完成登录');
-      }
-    } catch (error) {
-      message.error('验证失败');
-    } finally {
-      setCheckingPlatform(null);
     }
   };
 
@@ -315,29 +306,29 @@ const LoginManager: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 280,
+      width: 250,
       render: (_: any, record: PlatformInfo) => (
         <Space size="small">
+          {/* 一键登录按钮 */}
+          <Button
+            size="small"
+            type={record.status === 'logged_in' ? 'default' : 'primary'}
+            icon={<LoginOutlined />}
+            onClick={() => handleOneClickLogin(record)}
+            loading={operatingPlatform === record.platform}
+          >
+            {record.status === 'logged_in' ? '重新登录' : '登录'}
+          </Button>
+          {/* 检测按钮 */}
           <Tooltip title="检测登录状态">
             <Button
               size="small"
-              icon={<SyncOutlined spin={checkingPlatform === record.platform} />}
-              onClick={() => handleCheckLogin(record.platform)}
-              loading={checkingPlatform === record.platform}
-            >
-              检测
-            </Button>
+              icon={<SyncOutlined spin={operatingPlatform === record.platform} />}
+              onClick={() => handleCheckLogin(record.platform, record.platformName)}
+              loading={operatingPlatform === record.platform}
+            />
           </Tooltip>
-          <Tooltip title="打开浏览器登录">
-            <Button
-              size="small"
-              type="primary"
-              icon={<LoginOutlined />}
-              onClick={() => openLoginModal(record)}
-            >
-              登录
-            </Button>
-          </Tooltip>
+          {/* 详情按钮 */}
           <Tooltip title="查看详情">
             <Button
               size="small"
@@ -345,21 +336,14 @@ const LoginManager: React.FC = () => {
               onClick={() => handleViewDetail(record.platform)}
             />
           </Tooltip>
-          {record.status === 'logged_in' ? (
+          {/* 标记登出按钮 */}
+          {record.status === 'logged_in' && (
             <Tooltip title="标记为未登录">
               <Button
                 size="small"
                 danger
                 icon={<LogoutOutlined />}
                 onClick={() => handleMarkLogin(record.platform, false)}
-              />
-            </Tooltip>
-          ) : (
-            <Tooltip title="手动标记为已登录">
-              <Button
-                size="small"
-                icon={<CheckCircleOutlined />}
-                onClick={() => handleMarkLogin(record.platform, true)}
               />
             </Tooltip>
           )}
@@ -420,7 +404,7 @@ const LoginManager: React.FC = () => {
       {chromeRunning && (
         <Alert
           message="Chrome 浏览器正在运行"
-          description="请在打开的 Chrome 浏览器中完成登录操作，登录完成后点击相应平台的「检测」按钮验证登录状态。"
+          description="请在浏览器中完成登录，登录后点击「检测」按钮验证状态"
           type="info"
           showIcon
           action={
@@ -458,80 +442,6 @@ const LoginManager: React.FC = () => {
           size="middle"
         />
       </Card>
-
-      {/* 登录弹窗 */}
-      <Modal
-        title={`登录 ${currentPlatform?.platformName || ''}`}
-        open={loginModalVisible}
-        onCancel={() => setLoginModalVisible(false)}
-        footer={null}
-        width={500}
-      >
-        {currentPlatform && (
-          <div>
-            <Alert
-              message="登录步骤"
-              description={
-                <ol style={{ paddingLeft: 20, margin: 0 }}>
-                  <li>点击"打开浏览器"按钮启动 Chrome</li>
-                  <li>在打开的浏览器中完成登录操作</li>
-                  <li>登录成功后，点击"验证登录状态"按钮</li>
-                </ol>
-              }
-              type="info"
-              style={{ marginBottom: 16 }}
-            />
-
-            <Space direction="vertical" style={{ width: '100%' }} size="middle">
-              <div>
-                <strong>当前状态：</strong>
-                {renderStatus(currentPlatform.status)}
-                {currentPlatform.username && (
-                  <span style={{ marginLeft: 8 }}>({currentPlatform.username})</span>
-                )}
-              </div>
-
-              {currentPlatform.loginUrl && (
-                <div>
-                  <strong>登录地址：</strong>
-                  <a href={currentPlatform.loginUrl} target="_blank" rel="noopener noreferrer">
-                    {currentPlatform.loginUrl}
-                  </a>
-                </div>
-              )}
-
-              <Space>
-                {!chromeRunning ? (
-                  <Button type="primary" icon={<ChromeOutlined />} onClick={handleStartLogin}>
-                    打开浏览器
-                  </Button>
-                ) : (
-                  <Button danger icon={<ChromeOutlined />} onClick={handleStopChrome}>
-                    关闭浏览器
-                  </Button>
-                )}
-                <Button
-                  icon={<SyncOutlined />}
-                  onClick={handleVerifyLogin}
-                  loading={checkingPlatform === currentPlatform.platform}
-                  disabled={!chromeRunning}
-                >
-                  验证登录状态
-                </Button>
-              </Space>
-
-              {currentPlatform.lastError && (
-                <Alert
-                  message="上次检测错误"
-                  description={currentPlatform.lastError}
-                  type="error"
-                  showIcon
-                />
-              )}
-            </Space>
-          </div>
-        )}
-      </Modal>
 
       {/* 详情弹窗 */}
       <Modal
@@ -573,11 +483,6 @@ const LoginManager: React.FC = () => {
             <Descriptions.Item label="登录 URL" span={2}>
               {platformDetail.checkConfig?.loginUrl}
             </Descriptions.Item>
-            {platformDetail.lastError && (
-              <Descriptions.Item label="最后错误" span={2}>
-                <span style={{ color: '#ff4d4f' }}>{platformDetail.lastError}</span>
-              </Descriptions.Item>
-            )}
           </Descriptions>
         )}
       </Modal>
@@ -622,12 +527,6 @@ const LoginManager: React.FC = () => {
           </Form.Item>
           <Form.Item name="loginUrl" label="登录 URL">
             <Input placeholder="登录页面 URL（可选）" />
-          </Form.Item>
-          <Form.Item name="loggedInSelector" label="已登录选择器">
-            <Input placeholder="如: .user-avatar（可选）" />
-          </Form.Item>
-          <Form.Item name="loggedOutSelector" label="未登录选择器">
-            <Input placeholder="如: .login-button（可选）" />
           </Form.Item>
         </Form>
       </Modal>

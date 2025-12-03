@@ -17,6 +17,8 @@ export interface CrawlResult {
   articles: any[];
   errors?: string[];
   totalCrawled: number;
+  logs?: any[]; // AI 思考过程日志
+  taskId?: string; // 任务 ID
 }
 
 @Injectable()
@@ -41,12 +43,13 @@ export class CrawlerService {
    * @param platform 平台
    * @param keyword 关键词
    * @param streaming 是否流式输出（前端实时日志）
+   * @param includeLogs 是否返回 AI 思考日志
    */
-  async crawlPlatform(platform: PlatformType, keyword?: string, streaming: boolean = false): Promise<CrawlResult> {
+  async crawlPlatform(platform: PlatformType, keyword?: string, streaming: boolean = false, includeLogs: boolean = false): Promise<CrawlResult> {
     try {
       this.logger.log(`🚀 爬取 ${platform} ${keyword || ''}`);
 
-      const result = await this.smartCrawler.crawl(platform, keyword, streaming);
+      const result = await this.smartCrawler.crawl(platform, keyword, streaming, includeLogs);
 
       if (result.success && result.articles.length > 0) {
         await this.saveCrawledData(result);
@@ -58,6 +61,8 @@ export class CrawlerService {
         articles: result.articles,
         errors: result.errors,
         totalCrawled: result.totalCrawled,
+        logs: result.logs,
+        taskId: result.taskId,
       };
     } catch (error) {
       this.logger.error(`❌ 爬取失败: ${error.message}`);

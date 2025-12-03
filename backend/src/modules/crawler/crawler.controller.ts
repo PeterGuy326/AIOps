@@ -39,15 +39,17 @@ export class CrawlerController {
    * POST /crawler/task/execute
    * 立即执行单平台爬取（同步）
    * @param streaming 是否流式输出实时日志
+   * @param includeLogs 是否返回 AI 思考过程日志
    */
   @Post('task/execute')
   async executeTask(
-    @Body() body: { platform: PlatformType; keyword?: string; streaming?: boolean },
+    @Body() body: { platform: PlatformType; keyword?: string; streaming?: boolean; includeLogs?: boolean },
   ) {
     const result = await this.crawlerService.crawlPlatform(
       body.platform,
       body.keyword,
       body.streaming || false,
+      body.includeLogs || false,
     );
     return {
       message: '爬取完成',
@@ -55,6 +57,8 @@ export class CrawlerController {
       success: result.success,
       articles: result.totalCrawled,
       errors: result.errors,
+      logs: result.logs, // AI 思考过程日志
+      taskId: result.taskId, // 任务 ID（可用于查询更详细的日志）
     };
   }
 

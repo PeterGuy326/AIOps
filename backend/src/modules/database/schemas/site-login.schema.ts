@@ -4,6 +4,24 @@ import { Document } from 'mongoose';
 export type SiteLoginDocument = SiteLogin & Document;
 
 /**
+ * 共享的 Chrome 配置目录（所有平台共用）
+ * 使用用户真实的 Chrome 配置，保留所有登录态
+ */
+export const SHARED_CHROME_USER_DATA_DIR = (() => {
+  const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+  const platform = process.platform;
+
+  if (platform === 'darwin') {
+    return `${homeDir}/Library/Application Support/Google/Chrome`;
+  } else if (platform === 'linux') {
+    return `${homeDir}/.config/google-chrome`;
+  } else if (platform === 'win32') {
+    return `${process.env.LOCALAPPDATA}/Google/Chrome/User Data`;
+  }
+  return '/tmp/chrome-aiops-shared';
+})();
+
+/**
  * 网站登录状态
  * 管理各个平台的登录会话
  */
@@ -25,9 +43,21 @@ export class SiteLogin {
   })
   status: 'logged_in' | 'logged_out' | 'expired' | 'checking';
 
-  /** Chrome 用户数据目录路径 */
-  @Prop({ required: true })
+  /**
+   * Chrome 用户数据目录路径
+   * 默认使用共享目录（用户真实 Chrome 配置）
+   * 也可以配置为独立目录（用于特殊需求）
+   */
+  @Prop({ required: true, default: SHARED_CHROME_USER_DATA_DIR })
   userDataDir: string;
+
+  /**
+   * 是否使用共享的 Chrome 配置
+   * true: 使用用户真实 Chrome 配置（推荐，登录一次所有平台共享）
+   * false: 使用独立配置目录（隔离模式）
+   */
+  @Prop({ default: true })
+  useSharedProfile: boolean;
 
   /** 登录用户名/账号（如果能获取） */
   @Prop()
@@ -45,25 +75,32 @@ export class SiteLogin {
   @Prop({ type: Date })
   lastCheckTime?: Date;
 
-  /** 登录过期时间（预估） */
+  /**
+   * 登录过期时间（预估）
+   * 超过此时间需要重新检测登录状态
+   */
   @Prop({ type: Date })
   expiresAt?: Date;
+
+  /**
+   * 登录有效期（小时）
+   * 用于计算 expiresAt
+   * 不同平台的登录有效期不同
+   */
+  @Prop({ default: 24 * 7 }) // 默认 7 天
+  loginValidityHours: number;
 
   /** 登录检测配置 */
   @Prop({ type: Object })
   checkConfig: {
     /** 检测 URL */
     checkUrl: string;
-    /** 登录成功的标识选择器（存在则表示已登录） */
-    loggedInSelector?: string;
-    /** 未登录的标识选择器（存在则表示未登录） */
-    loggedOutSelector?: string;
+    /** Cookie 所属域名（如 .zhihu.com） */
+    domain?: string;
+    /** 登录态 Cookie 名称列表（存在任一即为已登录） */
+    loginCookies?: string[];
     /** 登录页 URL（用于手动登录） */
     loginUrl?: string;
-    /** 用户名选择器（用于获取登录账号信息） */
-    usernameSelector?: string;
-    /** 头像选择器 */
-    avatarSelector?: string;
   };
 
   /** 上次检测的错误信息 */
@@ -85,3 +122,4 @@ export const SiteLoginSchema = SchemaFactory.createForClass(SiteLogin);
 SiteLoginSchema.index({ platform: 1 }, { unique: true });
 SiteLoginSchema.index({ status: 1 });
 SiteLoginSchema.index({ lastCheckTime: 1 });
+SiteLoginSchema.index({ expiresAt: 1 });

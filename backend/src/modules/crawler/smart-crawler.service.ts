@@ -8,6 +8,8 @@ export interface SmartCrawlResult {
   articles: any[];
   totalCrawled: number;
   errors?: string[];
+  logs?: any[]; // AI 思考过程日志
+  taskId?: string; // 任务 ID（用于查询详细日志）
 }
 
 export interface AIStrategySuggestion {
@@ -85,41 +87,41 @@ export class SmartCrawlerService {
   private requestCount = 0;
   private lastRequestTime = 0;
 
-  // 平台特定的反爬虫配置
+  // 平台特定的反爬虫配置（优化版本）
   private readonly platformConfigs: Record<string, AntiCrawlerConfig> = {
     zhihu: {
-      minDelay: 2000,
-      maxDelay: 5000,
+      minDelay: 500,
+      maxDelay: 2000,
       simulateMouseMove: true,
       randomScroll: true,
-      requestInterval: 3000,
-      maxContinuousRequests: 5,
-      forcedBreakTime: 30000, // 30秒
+      requestInterval: 1500,
+      maxContinuousRequests: 8,
+      forcedBreakTime: 15000, // 15秒
     },
     weibo: {
-      minDelay: 1500,
-      maxDelay: 4000,
+      minDelay: 300,
+      maxDelay: 1500,
       simulateMouseMove: true,
       randomScroll: true,
-      requestInterval: 2500,
-      maxContinuousRequests: 8,
-      forcedBreakTime: 20000,
+      requestInterval: 1200,
+      maxContinuousRequests: 12,
+      forcedBreakTime: 10000,
     },
     wechat: {
-      minDelay: 2000,
-      maxDelay: 6000,
-      simulateMouseMove: false,
-      randomScroll: true,
-      requestInterval: 4000,
-      maxContinuousRequests: 3,
-      forcedBreakTime: 60000, // 1分钟
-    },
-    default: {
       minDelay: 1000,
       maxDelay: 3000,
       simulateMouseMove: false,
       randomScroll: true,
       requestInterval: 2000,
+      maxContinuousRequests: 5,
+      forcedBreakTime: 30000,
+    },
+    default: {
+      minDelay: 500,
+      maxDelay: 2000,
+      simulateMouseMove: false,
+      randomScroll: true,
+      requestInterval: 1500,
       maxContinuousRequests: 10,
       forcedBreakTime: 15000,
     },
@@ -132,8 +134,9 @@ export class SmartCrawlerService {
    * @param platform 平台名称
    * @param keyword 搜索关键词
    * @param streaming 是否流式输出（前端实时日志）
+   * @param includeLogs 是否返回 AI 思考日志（默认 false）
    */
-  async crawl(platform: string, keyword?: string, streaming: boolean = false): Promise<SmartCrawlResult> {
+  async crawl(platform: string, keyword?: string, streaming: boolean = false, includeLogs: boolean = false): Promise<SmartCrawlResult> {
     // 检查 MCP 服务状态
     if (!this.mcpService.isReady()) {
       return {
@@ -142,30 +145,12 @@ export class SmartCrawlerService {
         keyword,
         articles: [],
         totalCrawled: 0,
-        errors: ['MCP 服务未连接，请在 Claude Code 中运行'],
+        errors: ['Claude 服务未连接，请检查 Claude CLI 是否已安装'],
       };
     }
 
-    // 检查浏览器 MCP 是否可用
-    if (!this.mcpService.hasBrowserCapability()) {
-      const errorMsg = `爬虫功能需要浏览器 MCP 支持。请先配置 Chrome DevTools MCP。
-
-配置方法：
-claude mcp add chrome-devtools -- npx chrome-devtools-mcp@latest
-
-当前可用 MCP 工具: ${this.mcpService.getAvailableMCPTools().join(', ') || '无'}`;
-
-      this.logger.error(`❌ ${errorMsg}`);
-
-      return {
-        success: false,
-        platform,
-        keyword,
-        articles: [],
-        totalCrawled: 0,
-        errors: [errorMsg],
-      };
-    }
+    // 注意：不再强制要求 MCP 浏览器工具
+    // 爬虫会通过 Chrome CDP 直接控制浏览器，不依赖 MCP
 
     // 确保 Chrome 已启动
     if (!this.mcpService.isChromeRunning()) {
@@ -196,11 +181,25 @@ claude mcp add chrome-devtools -- npx chrome-devtools-mcp@latest
       const userAgent = this.getRandomUserAgent();
       const prompt = this.buildAntiCrawlerPrompt(platform, url, keyword, config, userAgent);
 
-      // 调用 MCP ask_claude 工具
-      const result = await this.mcpService.callTool('ask_claude', {
-        prompt,
-        model: 'claude-sonnet-4-5',
-      }, streaming);
+      let result: any;
+      let logs: any[] = [];
+      let taskId: string | undefined;
+
+      // 如果需要返回日志，使用带日志的方法
+      if (includeLogs) {
+        const response = await this.mcpService.callToolWithLogs('ask_claude', {
+          prompt,
+          model: 'claude-sonnet-4-5',
+        }, true); // streaming=true 才能捕获完整日志
+        result = response;
+        logs = response.logs;
+        taskId = response.taskId;
+      } else {
+        result = await this.mcpService.callTool('ask_claude', {
+          prompt,
+          model: 'claude-sonnet-4-5',
+        }, streaming);
+      }
 
       // 更新请求计数
       this.requestCount++;
@@ -216,6 +215,8 @@ claude mcp add chrome-devtools -- npx chrome-devtools-mcp@latest
         keyword,
         articles,
         totalCrawled: articles.length,
+        logs: includeLogs ? logs : undefined,
+        taskId,
       };
     } catch (error) {
       this.logger.error(`❌ 爬取失败: ${error.message}`);

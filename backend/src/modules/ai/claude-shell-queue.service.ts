@@ -62,8 +62,8 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
 
   // 配置参数
   private readonly MAX_WORKERS = 5; // 最大并发数
-  private readonly TASK_TIMEOUT = 120000; // 2分钟超时
-  private readonly DEADLOCK_CHECK_INTERVAL = 10000; // 10秒检查一次
+  private readonly TASK_TIMEOUT = 300000; // 5分钟超时
+  private readonly DEADLOCK_CHECK_INTERVAL = 15000; // 15秒检查一次
   private readonly MAX_RETRIES = 2; // 最大重试次数
   private readonly MAX_LOG_HISTORY = 50; // 最多保留50个任务的日志
   private readonly LOG_SAVE_INTERVAL = 5000; // 5秒保存一次日志到数据库
@@ -94,8 +94,8 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
     @InjectModel(ClaudeTaskModel.name) private claudeTaskModel: Model<ClaudeTaskDocument>,
   ) {}
 
-  // Claude 命令路径
-  private claudeCommand = 'claude';
+  // Claude 命令路径（绝对路径，避免 PATH 问题）
+  private claudeCommand = '/Users/huyz/.nvm/versions/node/v22.14.0/bin/claude';
 
   // MCP 工具可用性
   private availableMCPTools: string[] = [];
@@ -103,7 +103,9 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
 
   // Chrome 进程
   private chromeProcess: ReturnType<typeof import('child_process').spawn> | null = null;
-  private readonly CHROME_DEBUG_PORT = 9222;
+  // 使用独立端口 9223，避免与用户日常使用的 Chrome（可能在 9222）冲突
+  private readonly CHROME_DEBUG_PORT = 9223;
+  private currentChromeUserDataDir: string | null = null; // 当前 Chrome 使用的 userDataDir
 
   async onModuleInit() {
     await this.initialize();
@@ -120,13 +122,48 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
     try {
       this.logger.log('🚀 初始化 Claude Shell 队列服务');
 
-      // 检查 claude 命令
-      const { stdout } = await execAsync('which claude', { timeout: 5000 });
-      if (stdout && stdout.trim()) {
-        this.claudeCommand = stdout.trim();
-        this.logger.log(`✅ Claude 命令路径: ${this.claudeCommand}`);
-      } else {
-        throw new Error('未找到 claude 命令');
+      // 检查 claude 命令（优先使用 which 查找，否则使用默认路径）
+      try {
+        const { stdout } = await execAsync('which claude', { timeout: 5000 });
+        if (stdout && stdout.trim()) {
+          this.claudeCommand = stdout.trim();
+        }
+      } catch {
+        // which 失败，使用默认路径
+        this.logger.debug('which claude 失败，使用默认路径');
+      }
+
+      // 验证 Claude CLI 存在
+      const fs = await import('fs');
+      if (!fs.existsSync(this.claudeCommand)) {
+        throw new Error(`Claude CLI 不存在: ${this.claudeCommand}`);
+      }
+      this.logger.log(`✅ Claude 命令路径: ${this.claudeCommand}`);
+
+      // 验证 Claude CLI 可用性
+      try {
+        const testResult = await execAsync(`echo "test" | ${this.claudeCommand} --print --output-format json 2>&1`, {
+          timeout: 60000,
+          env: {
+            ...process.env,
+            HOME: process.env.HOME || '/Users/huyz',
+            PATH: `${require('path').dirname(this.claudeCommand)}:/usr/local/bin:/usr/bin:/bin`,
+          }
+        });
+        
+        // 解析测试结果以检测是否是认证问题
+        const response = testResult.stdout.trim();
+        if (response.includes('API Error: Connection error') || response.includes('Authentication required') || response.includes('Unauthorized')) {
+          this.logger.warn(`⚠️ Claude CLI 测试发现认证问题`);
+          this.logger.warn(`💡 建议: 请运行 'claude setup-token' 来配置认证`);
+          this.logger.warn(`💡 或者检查网络连接和 Claude 订阅状态`);
+        } else {
+          this.logger.log(`✅ Claude CLI 测试成功`);
+          this.logger.debug(`Claude CLI 响应: ${response.substring(0, 200)}...`);
+        }
+      } catch (testError) {
+        this.logger.warn(`⚠️ Claude CLI 测试失败: ${testError.message}`);
+        this.logger.warn(`💡 可能原因: 网络问题、认证过期或 Claude 服务不可用`);
       }
 
       // 初始化工作器
@@ -141,11 +178,16 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
       // 检查 MCP 工具可用性
       await this.checkMCPTools();
 
-      // 如果检测到 Chrome MCP，自动启动 Chrome
+      // 注意：不再在服务初始化时自动启动 Chrome
+      // 原因：用户可能已经为特定平台启动了 Chrome（使用专属 userDataDir）
+      // 自动启动会使用默认 userDataDir，导致关闭用户的 Chrome
+      // 改为按需启动：当用户点击登录或检测时再启动
       if (this.hasBrowserMCP) {
-        const chromeStarted = await this.startChrome();
-        if (!chromeStarted) {
-          this.logger.warn('⚠️  Chrome 启动失败，爬虫功能可能受限');
+        // 检查是否已有 Chrome 在运行
+        if (await this.isChromeDebugReady()) {
+          this.logger.log(`✅ 检测到 Chrome 已在端口 ${this.CHROME_DEBUG_PORT} 运行，跳过自动启动`);
+        } else {
+          this.logger.log(`ℹ️  Chrome MCP 已就绪，Chrome 将按需启动`);
         }
       }
 
@@ -228,6 +270,55 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
 
       this.logger.log(
         `📥 任务入队 [${taskId.substring(0, 8)}] (队列: ${this.taskQueue.length}, 忙碌: ${this.getBusyWorkerCount()}/${this.MAX_WORKERS}, 流式: ${streaming})`,
+      );
+
+      // 触发处理
+      this.processQueue();
+    });
+  }
+
+  /**
+   * 提交任务并返回结果和日志（用于前端展示 AI 思考过程）
+   * @param prompt 提示词
+   * @param streaming 是否流式输出（默认 true，记录完整思考过程）
+   * @returns { result: string, logs: ProcessLog[], taskId: string }
+   */
+  async submitTaskWithLogs(prompt: string, streaming: boolean = true): Promise<{
+    result: string;
+    logs: ProcessLog[];
+    taskId: string;
+  }> {
+    const taskId = this.generateTaskId();
+
+    return new Promise((resolve, reject) => {
+      const task: ClaudeTask = {
+        id: taskId,
+        prompt,
+        createdAt: Date.now(),
+        resolve: (result: string) => {
+          // 获取任务日志
+          const processInfo = this.getProcessInfo(taskId);
+          resolve({
+            result,
+            logs: processInfo?.logs || [],
+            taskId,
+          });
+        },
+        reject,
+        streaming,
+      };
+
+      // 设置任务超时
+      task.timeout = setTimeout(() => {
+        this.handleTaskTimeout(task);
+      }, this.TASK_TIMEOUT);
+
+      // 加入队列
+      this.taskQueue.push(task);
+      this.stats.totalTasks++;
+
+      this.logger.log(
+        `📥 任务入队 [${taskId.substring(0, 8)}] (队列: ${this.taskQueue.length}, 忙碌: ${this.getBusyWorkerCount()}/${this.MAX_WORKERS}, 流式: ${streaming}, withLogs: true)`,
       );
 
       // 触发处理
@@ -389,6 +480,8 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
       let stderr = '';
 
       // 使用 json 格式，简单直接
+      // 确保传递完整的环境变量，特别是 PATH、HOME、代理设置等
+      const claudeDir = path.dirname(this.claudeCommand);
       const child = spawn('sh', [
         '-c',
         `cat "${tmpFile}" | ${this.claudeCommand} --print --output-format json --dangerously-skip-permissions`
@@ -396,6 +489,8 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
         env: {
           ...process.env,
           CLAUDE_SESSION_ID: taskId,
+          HOME: process.env.HOME || '/Users/huyz',
+          PATH: `${claudeDir}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`,
         },
       });
 
@@ -473,6 +568,8 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
       let buffer = '';
 
       // 使用 stream-json 格式，需要 --verbose
+      // 确保传递完整的环境变量
+      const claudeDir = path.dirname(this.claudeCommand);
       const child = spawn('sh', [
         '-c',
         `cat "${tmpFile}" | ${this.claudeCommand} --print --verbose --output-format stream-json --dangerously-skip-permissions`
@@ -480,6 +577,8 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
         env: {
           ...process.env,
           CLAUDE_SESSION_ID: taskId,
+          HOME: process.env.HOME || '/Users/huyz',
+          PATH: `${claudeDir}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`,
         },
       });
 
@@ -1264,13 +1363,145 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * 启动 Chrome（开启远程调试）
+   * 获取用户真实的 Chrome 配置目录
+   * 这样可以保留用户的登录态、Cookie、书签等
    */
-  async startChrome(): Promise<boolean> {
+  private getUserChromeDataDir(): string {
+    const platform = process.platform;
+    const homeDir = process.env.HOME || process.env.USERPROFILE || '';
+
+    if (platform === 'darwin') {
+      // macOS
+      return path.join(homeDir, 'Library', 'Application Support', 'Google', 'Chrome');
+    } else if (platform === 'linux') {
+      // Linux
+      return path.join(homeDir, '.config', 'google-chrome');
+    } else if (platform === 'win32') {
+      // Windows
+      return path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'User Data');
+    }
+
+    // 默认返回临时目录（降级方案）
+    return path.join('/tmp', 'chrome-aiops-debug');
+  }
+
+  /**
+   * 获取 AIOps 专用的 Chrome 配置目录
+   * 使用独立目录，避免与用户日常使用的 Chrome 冲突
+   */
+  private getAIOpsChomeDataDir(): string {
+    return '/tmp/chrome-aiops-profile';
+  }
+
+  /**
+   * 同步 Cookie 从用户 Chrome 到 AIOps Chrome
+   * 这样爬虫可以使用用户的登录态，同时不锁定用户的 Chrome
+   */
+  private async syncCookiesFromUserChrome(): Promise<void> {
+    const userDir = this.getUserChromeDataDir();
+    const aiopsDir = this.getAIOpsChomeDataDir();
+
+    // 确保 AIOps 目录存在
+    await fs.promises.mkdir(path.join(aiopsDir, 'Default', 'Network'), { recursive: true });
+
+    // Cookie 文件路径
+    const userCookiePaths = [
+      path.join(userDir, 'Default', 'Cookies'),
+      path.join(userDir, 'Default', 'Network', 'Cookies'),
+    ];
+
+    const aiopsCookiePath = path.join(aiopsDir, 'Default', 'Network', 'Cookies');
+
+    for (const userCookiePath of userCookiePaths) {
+      if (fs.existsSync(userCookiePath)) {
+        try {
+          // 复制 Cookie 文件
+          await fs.promises.copyFile(userCookiePath, aiopsCookiePath);
+          this.logger.log(`✅ 已同步 Cookie: ${userCookiePath} → ${aiopsCookiePath}`);
+          return;
+        } catch (error) {
+          this.logger.warn(`Cookie 同步失败: ${error.message}`);
+        }
+      }
+    }
+
+    this.logger.warn('⚠️ 未找到用户 Chrome Cookie 文件，爬虫可能无法使用登录态');
+  }
+
+  /**
+   * 启动 Chrome（开启远程调试）
+   *
+   * 策略（优化后）：
+   * 1. 使用独立的 AIOps 配置目录，避免与用户 Chrome 冲突
+   * 2. 启动前同步用户 Chrome 的 Cookie，保持登录态
+   * 3. 如果指定了 userDataDir，则使用指定的目录
+   *
+   * @param userDataDir 可选的用户数据目录，默认使用 AIOps 专用目录
+   * @param forceRestart 是否强制重启（当需要切换 userDataDir 时）
+   * @param headless 是否使用无头模式（默认 false，显示浏览器窗口方便调试）
+   * @param startUrl 启动后打开的 URL（可选）
+   */
+  async startChrome(
+    userDataDir?: string,
+    forceRestart: boolean = false,
+    headless: boolean = false,
+    startUrl?: string,
+  ): Promise<boolean> {
+    // 默认使用 AIOps 专用目录（避免与用户 Chrome 冲突）
+    const targetUserDataDir = userDataDir || this.getAIOpsChomeDataDir();
+
+    // 如果使用 AIOps 专用目录，先同步 Cookie
+    if (targetUserDataDir === this.getAIOpsChomeDataDir()) {
+      await this.syncCookiesFromUserChrome();
+    }
+
+    // 检查是否需要重启 Chrome（userDataDir 变化）
+    if (this.chromeProcess && this.currentChromeUserDataDir !== targetUserDataDir) {
+      this.logger.log(`🔄 Chrome userDataDir 变化，需要重启: ${this.currentChromeUserDataDir} → ${targetUserDataDir}`);
+      forceRestart = true;
+    }
+
+    // 强制重启时先关闭现有 Chrome
+    if (forceRestart && this.chromeProcess) {
+      await this.stopChrome();
+    }
+
     // 检查是否已经有 Chrome 在调试端口运行
     if (await this.isChromeDebugReady()) {
-      this.logger.log(`✅ Chrome 调试端口 ${this.CHROME_DEBUG_PORT} 已就绪`);
-      return true;
+      // 如果 userDataDir 匹配，直接使用现有 Chrome
+      if (this.currentChromeUserDataDir === targetUserDataDir) {
+        this.logger.log(`✅ Chrome 调试端口 ${this.CHROME_DEBUG_PORT} 已就绪 (userDataDir: ${targetUserDataDir})`);
+        // 如果指定了 startUrl，导航到该页面
+        if (startUrl) {
+          this.logger.log(`🌐 导航到: ${startUrl}`);
+          await this.navigateToUrl(startUrl);
+        }
+        return true;
+      }
+
+      // currentChromeUserDataDir 为 null 说明这个 Chrome 不是我们管理的
+      // 可能是用户通过登录管理启动的，尝试检测它的 userDataDir
+      if (this.currentChromeUserDataDir === null) {
+        // 尝试从进程参数中获取 userDataDir
+        const detectedDir = await this.detectChromeUserDataDir();
+        if (detectedDir === targetUserDataDir) {
+          this.logger.log(`✅ 检测到现有 Chrome 使用目标 userDataDir: ${targetUserDataDir}`);
+          this.currentChromeUserDataDir = targetUserDataDir;
+          // 如果指定了 startUrl，导航到该页面
+          if (startUrl) {
+            this.logger.log(`🌐 导航到: ${startUrl}`);
+            await this.navigateToUrl(startUrl);
+          }
+          return true;
+        }
+        this.logger.warn(`⚠️ Chrome 已在端口 ${this.CHROME_DEBUG_PORT} 运行，检测到 userDataDir: ${detectedDir || 'unknown'}`);
+      } else {
+        this.logger.warn(`⚠️ Chrome userDataDir 不匹配: ${this.currentChromeUserDataDir} != ${targetUserDataDir}`);
+      }
+
+      // userDataDir 不匹配，需要关闭并重启
+      this.logger.log(`🔄 关闭现有 Chrome 并用新的 userDataDir 重启`);
+      await this.stopChrome();
     }
 
     const chromePath = this.getChromePath();
@@ -1279,33 +1510,35 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    this.logger.log(`🚀 启动 Chrome: ${chromePath}`);
+    this.logger.log(`🚀 启动 Chrome: ${chromePath} (userDataDir: ${targetUserDataDir}, headless: ${headless}, url: ${startUrl || 'none'})`);
 
-    // 创建用户数据目录（隔离配置）
-    const userDataDir = path.join('/tmp', 'chrome-aiops-debug');
-    await fs.promises.mkdir(userDataDir, { recursive: true });
+    // 确保用户数据目录存在
+    await fs.promises.mkdir(targetUserDataDir, { recursive: true });
 
     try {
-      // 启动 Chrome
-      this.chromeProcess = spawn(chromePath, [
+      // 构建 Chrome 启动参数 - 保留用户配置，只添加必要的调试选项
+      const chromeArgs = [
         `--remote-debugging-port=${this.CHROME_DEBUG_PORT}`,
-        `--user-data-dir=${userDataDir}`,
+        `--user-data-dir=${targetUserDataDir}`,
         '--no-first-run',
         '--no-default-browser-check',
-        '--disable-background-networking',
-        '--disable-client-side-phishing-detection',
-        '--disable-default-apps',
-        '--disable-extensions',
-        '--disable-hang-monitor',
-        '--disable-popup-blocking',
-        '--disable-prompt-on-repost',
-        '--disable-sync',
-        '--disable-translate',
-        '--metrics-recording-only',
-        '--safebrowsing-disable-auto-update',
-        '--enable-features=NetworkService,NetworkServiceInProcess',
-        '--headless=new', // 无头模式，不显示窗口
-      ], {
+        // 注意：不禁用 extensions，保留用户的扩展（可能包含登录相关插件）
+        // 注意：不禁用 sync，保留用户的同步数据
+        // 注意：不禁用 popup，某些登录流程需要弹窗
+      ];
+
+      // 根据 headless 参数决定是否启用无头模式
+      if (headless) {
+        chromeArgs.push('--headless=new');
+      }
+
+      // 添加启动 URL（如果指定）
+      if (startUrl) {
+        chromeArgs.push(startUrl);
+      }
+
+      // 启动 Chrome
+      this.chromeProcess = spawn(chromePath, chromeArgs, {
         detached: false,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -1332,25 +1565,34 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 500));
         if (await this.isChromeDebugReady()) {
+          this.currentChromeUserDataDir = targetUserDataDir; // 记录当前使用的 userDataDir
           this.logger.log(`✅ Chrome 已启动并就绪 (端口: ${this.CHROME_DEBUG_PORT})`);
+          this.logger.log(`✅ 使用用户配置目录: ${targetUserDataDir}`);
+          this.logger.log(`✅ 已保留用户登录态、Cookie 和扩展`);
           return true;
         }
       }
 
       this.logger.error('❌ Chrome 启动超时');
+      this.logger.log('💡 可能原因: Chrome 已在运行但未开启调试端口，或配置目录被锁定');
+      this.logger.log('💡 解决方案: 关闭所有 Chrome 窗口后重试');
+      this.currentChromeUserDataDir = null;
       return false;
     } catch (error) {
       this.logger.error('❌ Chrome 启动失败:', error.message);
+      this.logger.log('💡 如果提示配置目录被锁定，请关闭所有 Chrome 窗口后重试');
+      this.currentChromeUserDataDir = null;
       return false;
     }
   }
 
   /**
    * 关闭 Chrome
+   * 支持关闭我们管理的进程，也支持关闭外部启动的 Chrome（通过端口查找）
    */
   async stopChrome(): Promise<void> {
     if (this.chromeProcess) {
-      this.logger.log('🛑 关闭 Chrome');
+      this.logger.log('🛑 关闭 Chrome (内部进程)');
       this.chromeProcess.kill('SIGTERM');
 
       // 等待进程退出
@@ -1372,6 +1614,147 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
       });
 
       this.chromeProcess = null;
+      this.currentChromeUserDataDir = null;
+    } else if (await this.isChromeDebugReady()) {
+      // 没有内部进程引用，但端口上有 Chrome 运行
+      // 尝试通过进程查找并关闭
+      this.logger.log('🛑 关闭 Chrome (外部进程)');
+      try {
+        // 查找并杀死监听指定端口的 Chrome 主进程
+        await execAsync(
+          `ps aux | grep -i "chrome" | grep -- "--remote-debugging-port=${this.CHROME_DEBUG_PORT}" | grep -v "Helper" | awk '{print $2}' | xargs kill 2>/dev/null || true`,
+          { timeout: 5000 }
+        );
+        // 等待进程退出
+        await new Promise(r => setTimeout(r, 1000));
+        this.currentChromeUserDataDir = null;
+      } catch (error) {
+        this.logger.debug(`关闭外部 Chrome 失败: ${error.message}`);
+      }
+    }
+  }
+
+  /**
+   * 通过 Chrome DevTools Protocol 导航到指定 URL
+   * 当 Chrome 已经在运行时，使用此方法打开新页面
+   */
+  async navigateToUrl(url: string): Promise<boolean> {
+    if (!await this.isChromeDebugReady()) {
+      this.logger.error('Chrome 未运行，无法导航');
+      return false;
+    }
+
+    try {
+      const http = await import('http');
+
+      // 1. 获取当前页面列表
+      const pagesJson = await new Promise<string>((resolve, reject) => {
+        http.get(`http://127.0.0.1:${this.CHROME_DEBUG_PORT}/json`, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => resolve(data));
+          res.on('error', reject);
+        }).on('error', reject);
+      });
+
+      const pages = JSON.parse(pagesJson);
+
+      if (pages.length === 0) {
+        // 没有页面，创建新页面（使用 PUT 方法，Chrome 115+ 要求）
+        await new Promise<string>((resolve, reject) => {
+          const options = {
+            hostname: '127.0.0.1',
+            port: this.CHROME_DEBUG_PORT,
+            path: `/json/new?${encodeURIComponent(url)}`,
+            method: 'PUT',
+          };
+          const req = http.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => resolve(data));
+            res.on('error', reject);
+          });
+          req.on('error', reject);
+          req.end();
+        });
+        this.logger.log(`✅ 已在新标签页打开: ${url}`);
+      } else {
+        // 有页面，在第一个页面中导航
+        const pageId = pages[0].id;
+        const WebSocket = (await import('ws')).default;
+
+        const ws = new WebSocket(pages[0].webSocketDebuggerUrl);
+
+        await new Promise<void>((resolve, reject) => {
+          ws.on('open', () => {
+            // 发送 Page.navigate 命令
+            ws.send(JSON.stringify({
+              id: 1,
+              method: 'Page.navigate',
+              params: { url },
+            }));
+          });
+
+          ws.on('message', (data: Buffer) => {
+            const response = JSON.parse(data.toString());
+            if (response.id === 1) {
+              ws.close();
+              resolve();
+            }
+          });
+
+          ws.on('error', reject);
+
+          // 超时处理
+          setTimeout(() => {
+            ws.close();
+            reject(new Error('导航超时'));
+          }, 10000);
+        });
+
+        this.logger.log(`✅ 已导航到: ${url}`);
+      }
+
+      return true;
+    } catch (error) {
+      this.logger.error(`导航失败: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * 获取当前 Chrome 使用的 userDataDir
+   */
+  getCurrentChromeUserDataDir(): string | null {
+    return this.currentChromeUserDataDir;
+  }
+
+  /**
+   * 检测当前运行的 Chrome 使用的 userDataDir
+   * 通过查找 Chrome 进程的命令行参数来获取
+   */
+  private async detectChromeUserDataDir(): Promise<string | null> {
+    try {
+      // 查找监听指定端口的 Chrome 进程
+      const { stdout } = await execAsync(
+        `ps aux | grep -i chrome | grep -- "--remote-debugging-port=${this.CHROME_DEBUG_PORT}" | grep -- "--user-data-dir=" | head -1`,
+        { timeout: 5000 }
+      );
+
+      if (!stdout.trim()) {
+        return null;
+      }
+
+      // 从命令行参数中提取 user-data-dir
+      const match = stdout.match(/--user-data-dir=([^\s]+)/);
+      if (match && match[1]) {
+        return match[1];
+      }
+
+      return null;
+    } catch (error) {
+      this.logger.debug(`检测 Chrome userDataDir 失败: ${error.message}`);
+      return null;
     }
   }
 

@@ -231,6 +231,33 @@ AI:    Claude Code Shell + 任务队列
 - ✅ 任务成功/失败统计
 - ✅ 超时次数统计
 
+### 本地 Claude 实例架构
+
+#### 本地化执行流程
+
+```
+前端请求 → AI Controller → AI Service → Claude MCP Service 
+    ↓
+Claude Shell Queue Service → 本地 Claude CLI 实例 
+    ↓
+Chrome DevTools MCP 服务 → 浏览器自动化执行
+```
+
+#### 架构优势
+
+1. **完全本地化**：所有 Claude 实例都在本地运行
+2. **MCP 服务管理**：通过 Chrome DevTools MCP 实现更好的控制
+3. **并发处理**：支持多个 Claude 实例同时运行
+4. **任务队列**：避免资源竞争和死锁
+5. **详细日志**：完整的执行过程记录
+
+#### 本地实例管理机制
+
+- **实例池管理**：最多 5 个并发 Claude 实例
+- **会话隔离**：每个任务使用独立的 `CLAUDE_SESSION_ID`
+- **临时文件隔离**：每个任务使用独立的临时文件
+- **MCP 服务集成**：通过 Chrome DevTools MCP 管理浏览器上下文
+
 ### 死锁问题解析
 
 #### ❌ 之前的死锁原因
