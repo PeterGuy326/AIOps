@@ -3,6 +3,7 @@ import { InjectQueue } from '@nestjs/bull';
 import { Queue } from 'bull';
 import { DatabaseService } from '../database/database.service';
 import { SmartCrawlerService } from './smart-crawler.service';
+import * as crypto from 'crypto';
 
 export type PlatformType = 'zhihu' | 'wechat' | 'weibo';
 
@@ -39,7 +40,85 @@ export class CrawlerService {
   }
 
   /**
-   * 爬取单平台
+   * 生成爬虫任务 ID
+   */
+  private generateCrawlTaskId(): string {
+    return `crawl-${crypto.randomBytes(8).toString('hex')}`;
+  }
+
+  /**
+   * 异步爬取单平台（立即返回任务 ID，后台执行）
+   * @param platform 平台
+   * @param keyword 关键词
+   * @param streaming 是否流式输出
+   * @param includeLogs 是否记录日志
+   * @returns 任务 ID
+   */
+  async crawlPlatformAsync(
+    platform: PlatformType,
+    keyword?: string,
+    streaming: boolean = false,
+    includeLogs: boolean = false,
+  ): Promise<string> {
+    const taskId = this.generateCrawlTaskId();
+
+    this.logger.log(`🚀 异步爬取任务已提交 [${taskId}]: ${platform} ${keyword || ''}`);
+
+    // 后台异步执行，不等待结果
+    this.executeCrawlTask(taskId, platform, keyword, streaming, includeLogs).catch((error) => {
+      this.logger.error(`❌ 异步爬取任务失败 [${taskId}]: ${error.message}`);
+    });
+
+    return taskId;
+  }
+
+  /**
+   * 执行爬取任务（内部方法）
+   */
+  private async executeCrawlTask(
+    taskId: string,
+    platform: PlatformType,
+    keyword?: string,
+    streaming: boolean = false,
+    includeLogs: boolean = false,
+  ): Promise<void> {
+    try {
+      this.logger.log(`🔧 开始执行爬取任务 [${taskId}]: ${platform} ${keyword || ''}`);
+
+      const result = await this.smartCrawler.crawl(platform, keyword, streaming, includeLogs);
+
+      if (result.success && result.articles.length > 0) {
+        await this.saveCrawledData(result);
+        this.logger.log(`✅ 爬取任务完成 [${taskId}]: ${result.totalCrawled} 篇文章`);
+      } else {
+        this.logger.warn(`⚠️ 爬取任务完成但无结果 [${taskId}]: ${result.errors?.join(', ') || '未知原因'}`);
+      }
+    } catch (error) {
+      this.logger.error(`❌ 爬取任务执行失败 [${taskId}]: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * 异步爬取全平���（立即返回任务 ID 列表）
+   */
+  async crawlAllPlatformsAsync(keywords?: string[], streaming: boolean = false): Promise<string[]> {
+    const platforms: PlatformType[] = ['zhihu', 'wechat', 'weibo'];
+    const taskIds: string[] = [];
+
+    for (const platform of platforms) {
+      const keyword = keywords?.[Math.floor(Math.random() * keywords.length)];
+      const taskId = await this.crawlPlatformAsync(platform, keyword, streaming, true);
+      taskIds.push(taskId);
+      // 稍微错开启动时间，避免同时请求
+      await this.delay(1000);
+    }
+
+    return taskIds;
+  }
+
+  /**
+   * 同步爬取单平台（等待完成）
    * @param platform 平台
    * @param keyword 关键词
    * @param streaming 是否流式输出（前端实时日志）
@@ -47,7 +126,7 @@ export class CrawlerService {
    */
   async crawlPlatform(platform: PlatformType, keyword?: string, streaming: boolean = false, includeLogs: boolean = false): Promise<CrawlResult> {
     try {
-      this.logger.log(`🚀 爬取 ${platform} ${keyword || ''}`);
+      this.logger.log(`🚀 同步爬取 ${platform} ${keyword || ''}`);
 
       const result = await this.smartCrawler.crawl(platform, keyword, streaming, includeLogs);
 
@@ -65,7 +144,7 @@ export class CrawlerService {
         taskId: result.taskId,
       };
     } catch (error) {
-      this.logger.error(`❌ 爬取失败: ${error.message}`);
+      this.logger.error(`❌ 同步爬取失败: ${error.message}`);
       return {
         success: false,
         platform,
@@ -77,7 +156,7 @@ export class CrawlerService {
   }
 
   /**
-   * 爬取全平台
+   * 同步爬取全平台（等待完成）
    * @param keywords 关键词列表
    * @param streaming 是否流式输出
    */
