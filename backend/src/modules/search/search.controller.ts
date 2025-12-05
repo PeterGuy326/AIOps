@@ -10,6 +10,27 @@ export class SearchController {
   constructor(private readonly searchService: SearchService) {}
 
   /**
+   * GET /search/content/list
+   * 获取所有爬取的内容列表（分页）
+   */
+  @Get('content/list')
+  async getAllContents(
+    @Query('platform') platform?: string,
+    @Query('from') from?: string,
+    @Query('size') size?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: 'asc' | 'desc',
+  ) {
+    return await this.searchService.getAllContents({
+      platform,
+      from: from ? parseInt(from) : 0,
+      size: size ? parseInt(size) : 20,
+      sortBy: sortBy || 'crawledAt',
+      sortOrder: sortOrder || 'desc',
+    });
+  }
+
+  /**
    * GET /search/content/query
    * 搜索内容
    */

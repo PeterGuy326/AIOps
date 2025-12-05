@@ -10,6 +10,48 @@ export class SearchService {
   ) {}
 
   /**
+   * 获取所有原始内容（分页）- 直接从 MongoDB 查询
+   */
+  async getAllContents(options: {
+    platform?: string;
+    from?: number;
+    size?: number;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+  } = {}) {
+    const { platform, from = 0, size = 20, sortBy = 'crawledAt', sortOrder = 'desc' } = options;
+
+    const result = await this.databaseService.findAllRawContents({
+      platform,
+      skip: from,
+      limit: size,
+      sortBy,
+      sortOrder,
+    });
+
+    return {
+      total: result.total,
+      hits: result.contents.map((doc: any) => ({
+        id: doc._id?.toString(),
+        _id: doc._id?.toString(),
+        title: doc.title,
+        summary: doc.summary,
+        content: doc.summary, // 兼容前端字段
+        author: doc.author,
+        platform: doc.platform || doc.metadata?.platform,
+        url: doc.url,
+        likes: doc.likes || 0,
+        comments: doc.comments || 0,
+        tags: doc.tags || [],
+        status: 'crawled', // 爬取的内容状态
+        publishTime: doc.publishTime || doc.metadata?.publishTime,
+        crawledAt: doc.crawledAt,
+        created_at: doc.crawledAt,
+      })),
+    };
+  }
+
+  /**
    * 搜索内容 - 两步查询
    * 1. 从 ES 获取 articleId 列表
    * 2. 根据 articleId 从 MongoDB 查询完整数据
