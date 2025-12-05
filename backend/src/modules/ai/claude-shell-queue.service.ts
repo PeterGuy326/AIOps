@@ -19,6 +19,7 @@ interface ClaudeTask {
   resolve: (value: string) => void;
   reject: (error: Error) => void;
   timeout?: NodeJS.Timeout;
+  timeoutMs?: number; // 任务级别的超时时间（毫秒）
   streaming?: boolean; // 是否需要流式输出（前端实时日志）
 }
 
@@ -62,7 +63,8 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
 
   // 配置参数
   private readonly MAX_WORKERS = 5; // 最大并发数
-  private readonly TASK_TIMEOUT = 300000; // 5分钟超时
+  private readonly DEFAULT_TASK_TIMEOUT = 600000; // 默认 10 分钟超时（爬虫任务需要更长时间）
+  private readonly MAX_TASK_TIMEOUT = 1800000; // 最大 30 分钟超时
   private readonly DEADLOCK_CHECK_INTERVAL = 15000; // 15秒检查一次
   private readonly MAX_RETRIES = 2; // 最大重试次数
   private readonly MAX_LOG_HISTORY = 50; // 最多保留50个任务的日志
@@ -245,10 +247,17 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
    * 提交任务到队列
    * @param prompt 提示词
    * @param streaming 是否流式输出（默认 true，记录完整思考过程）
+   * @param timeoutMs 任务超时时间（毫秒），默认 10 分钟，最大 30 分钟
    */
-  async submitTask(prompt: string, streaming: boolean = true): Promise<string> {
+  async submitTask(prompt: string, streaming: boolean = true, timeoutMs?: number): Promise<string> {
     return new Promise((resolve, reject) => {
       const taskId = this.generateTaskId();
+
+      // 计算实际超时时间
+      const actualTimeout = Math.min(
+        timeoutMs || this.DEFAULT_TASK_TIMEOUT,
+        this.MAX_TASK_TIMEOUT
+      );
 
       const task: ClaudeTask = {
         id: taskId,
@@ -257,19 +266,20 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
         resolve,
         reject,
         streaming,
+        timeoutMs: actualTimeout,
       };
 
       // 设置任务超时
       task.timeout = setTimeout(() => {
         this.handleTaskTimeout(task);
-      }, this.TASK_TIMEOUT);
+      }, actualTimeout);
 
       // 加入队列
       this.taskQueue.push(task);
       this.stats.totalTasks++;
 
       this.logger.log(
-        `📥 任务入队 [${taskId.substring(0, 8)}] (队列: ${this.taskQueue.length}, 忙碌: ${this.getBusyWorkerCount()}/${this.MAX_WORKERS}, 流式: ${streaming})`,
+        `📥 任务入队 [${taskId.substring(0, 8)}] (队列: ${this.taskQueue.length}, 忙碌: ${this.getBusyWorkerCount()}/${this.MAX_WORKERS}, 流式: ${streaming}, 超时: ${actualTimeout / 1000}s)`,
       );
 
       // 触发处理
@@ -281,14 +291,21 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
    * 提交任务并返回结果和日志（用于前端展示 AI 思考过程）
    * @param prompt 提示词
    * @param streaming 是否流式输出（默认 true，记录完整思考过程）
+   * @param timeoutMs 任务超时时间（毫秒），默认 10 分钟，最大 30 分钟
    * @returns { result: string, logs: ProcessLog[], taskId: string }
    */
-  async submitTaskWithLogs(prompt: string, streaming: boolean = true): Promise<{
+  async submitTaskWithLogs(prompt: string, streaming: boolean = true, timeoutMs?: number): Promise<{
     result: string;
     logs: ProcessLog[];
     taskId: string;
   }> {
     const taskId = this.generateTaskId();
+
+    // 计算实际超时时间
+    const actualTimeout = Math.min(
+      timeoutMs || this.DEFAULT_TASK_TIMEOUT,
+      this.MAX_TASK_TIMEOUT
+    );
 
     return new Promise((resolve, reject) => {
       const task: ClaudeTask = {
@@ -306,19 +323,20 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
         },
         reject,
         streaming,
+        timeoutMs: actualTimeout,
       };
 
       // 设置任务超时
       task.timeout = setTimeout(() => {
         this.handleTaskTimeout(task);
-      }, this.TASK_TIMEOUT);
+      }, actualTimeout);
 
       // 加入队列
       this.taskQueue.push(task);
       this.stats.totalTasks++;
 
       this.logger.log(
-        `📥 任务入队 [${taskId.substring(0, 8)}] (队列: ${this.taskQueue.length}, 忙碌: ${this.getBusyWorkerCount()}/${this.MAX_WORKERS}, 流式: ${streaming}, withLogs: true)`,
+        `📥 任务入队 [${taskId.substring(0, 8)}] (队列: ${this.taskQueue.length}, 忙碌: ${this.getBusyWorkerCount()}/${this.MAX_WORKERS}, 流式: ${streaming}, withLogs: true, 超时: ${actualTimeout / 1000}s)`,
       );
 
       // 触发处理
@@ -491,6 +509,10 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
           CLAUDE_SESSION_ID: taskId,
           HOME: process.env.HOME || '/Users/huyz',
           PATH: `${claudeDir}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`,
+          // 确保代理设置被传递（关键！）
+          http_proxy: process.env.http_proxy || process.env.HTTP_PROXY || 'http://127.0.0.1:7890',
+          https_proxy: process.env.https_proxy || process.env.HTTPS_PROXY || 'http://127.0.0.1:7890',
+          all_proxy: process.env.all_proxy || process.env.ALL_PROXY || 'socks5://127.0.0.1:7890',
         },
       });
 
@@ -524,6 +546,14 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
         // 清理临时文件
         fs.promises.unlink(tmpFile).catch(() => {});
 
+        // 检查是否被外部终止（超时处理会 kill 进程）
+        if (code === null || code === 143 || code === 137) {
+          // 143 = SIGTERM, 137 = SIGKILL
+          // 超时处理已经 reject 了，这里不需要再处理
+          this.logger.debug(`进程被信号终止 [${taskId.substring(0, 8)}]: code=${code}`);
+          return;
+        }
+
         if (code !== 0) {
           const errorDetail = stderr || stdout || '无输出';
           this.logger.error(`Claude CLI 失败 [${taskId.substring(0, 8)}]: code=${code}`);
@@ -543,18 +573,8 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
         }
       });
 
-      // 设置超时
-      setTimeout(() => {
-        if (this.activeProcesses.has(taskId)) {
-          this.addLog(taskId, 'system', '进程超时，强制终止');
-          child.kill('SIGTERM');
-          setTimeout(() => {
-            if (this.activeProcesses.has(taskId)) {
-              child.kill('SIGKILL');
-            }
-          }, 5000);
-        }
-      }, this.TASK_TIMEOUT - 5000);
+      // 注意：超时由队列层 handleTaskTimeout 处理，这里不再设置内部超时
+      // 避免重复处理和竞态条件
     });
   }
 
@@ -579,6 +599,10 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
           CLAUDE_SESSION_ID: taskId,
           HOME: process.env.HOME || '/Users/huyz',
           PATH: `${claudeDir}:${process.env.PATH || '/usr/local/bin:/usr/bin:/bin'}`,
+          // 确保代理设置被传递（关键！）
+          http_proxy: process.env.http_proxy || process.env.HTTP_PROXY || 'http://127.0.0.1:7890',
+          https_proxy: process.env.https_proxy || process.env.HTTPS_PROXY || 'http://127.0.0.1:7890',
+          all_proxy: process.env.all_proxy || process.env.ALL_PROXY || 'socks5://127.0.0.1:7890',
         },
       });
 
@@ -644,6 +668,14 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
         // 清理临时文件
         fs.promises.unlink(tmpFile).catch(() => {});
 
+        // 检查是否被外部终止（超时处理会 kill 进程）
+        if (code === null || code === 143 || code === 137) {
+          // 143 = SIGTERM, 137 = SIGKILL
+          // 超时处理已经 reject 了，这里不需要再处理
+          this.logger.debug(`进程被信号终止 [${taskId.substring(0, 8)}]: code=${code}`);
+          return;
+        }
+
         if (code !== 0) {
           const errorDetail = stderr || finalResult || '无输出';
           this.logger.error(`Claude CLI 失败 [${taskId.substring(0, 8)}]: code=${code}`);
@@ -654,18 +686,8 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
         resolve(this.extractJSONFromResponse(finalResult));
       });
 
-      // 设置超时
-      setTimeout(() => {
-        if (this.activeProcesses.has(taskId)) {
-          this.addLog(taskId, 'system', '进程超时，强制终止');
-          child.kill('SIGTERM');
-          setTimeout(() => {
-            if (this.activeProcesses.has(taskId)) {
-              child.kill('SIGKILL');
-            }
-          }, 5000);
-        }
-      }, this.TASK_TIMEOUT - 5000);
+      // 注意：超时由队列层 handleTaskTimeout 处理，这里不再设置内部超时
+      // 避免重复处理和竞态条件
     });
   }
 
@@ -903,10 +925,35 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
   private handleTaskTimeout(task: ClaudeTask) {
     this.logger.warn(`⏰ 任务超时 [${task.id.substring(0, 8)}]`);
 
-    // 从队列中移除
+    // 从队列中移除（如果还在队列中）
     const index = this.taskQueue.indexOf(task);
     if (index > -1) {
       this.taskQueue.splice(index, 1);
+    }
+
+    // 🔥 关键修复：杀死正在运行的 Claude CLI 进程
+    const childProcess = this.activeProcesses.get(task.id);
+    if (childProcess) {
+      this.logger.warn(`🔪 强制终止进程 [PID: ${childProcess.pid}]`);
+      this.addLog(task.id, 'system', '任务超时，强制终止进程');
+
+      // 先发送 SIGTERM，给进程清理的机会
+      childProcess.kill('SIGTERM');
+
+      // 3 秒后如果还没退出，强制 SIGKILL
+      setTimeout(() => {
+        if (this.activeProcesses.has(task.id)) {
+          this.logger.warn(`🔪 SIGKILL 进程 [PID: ${childProcess.pid}]`);
+          childProcess.kill('SIGKILL');
+          this.activeProcesses.delete(task.id);
+        }
+      }, 3000);
+    }
+
+    // 更新进程状态
+    const processInfo = this.processInfos.get(task.id);
+    if (processInfo) {
+      processInfo.status = 'timeout';
     }
 
     // 查找执行此任务的工作器
@@ -916,12 +963,20 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
       worker.busy = false;
       worker.currentTask = undefined;
       worker.startTime = undefined;
+      worker.pid = undefined;
 
       // 继续处理队列
       this.processQueue();
     }
 
     this.stats.timeouts++;
+
+    // 更新数据库记录
+    const duration = processInfo ? Date.now() - processInfo.startTime : 0;
+    this.updateTaskRecord(task.id, 'timeout', undefined, '任务超时', duration).catch(err => {
+      this.logger.error(`更新超时任务记录失败: ${err.message}`);
+    });
+
     task.reject(new Error('任务超时'));
   }
 
@@ -933,13 +988,17 @@ export class ClaudeShellQueueService implements OnModuleInit, OnModuleDestroy {
       const now = Date.now();
 
       this.workers.forEach((worker) => {
-        if (worker.busy && worker.startTime) {
+        if (worker.busy && worker.startTime && worker.currentTask) {
           const duration = now - worker.startTime;
 
+          // 获取任务的超时时间（从队列或进程信息中）
+          const task = this.taskQueue.find(t => t.id === worker.currentTask);
+          const taskTimeout = task?.timeoutMs || this.DEFAULT_TASK_TIMEOUT;
+
           // 如果任务运行超过超时时间的 80%，发出警告
-          if (duration > this.TASK_TIMEOUT * 0.8) {
+          if (duration > taskTimeout * 0.8) {
             this.logger.warn(
-              `⚠️  工作器 [${worker.id}] 任务运行时间过长: ${duration}ms (任务: ${worker.currentTask?.substring(0, 8)})`,
+              `⚠️  工作器 [${worker.id}] 任务运行时间过长: ${duration}ms / ${taskTimeout}ms (任务: ${worker.currentTask?.substring(0, 8)})`,
             );
           }
         }
