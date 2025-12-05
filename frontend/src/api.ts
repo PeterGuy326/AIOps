@@ -136,6 +136,15 @@ export const aiGetTaskStats = (days?: number) =>
 
 // ==================== 搜索模块 ====================
 
+/** 获取所有爬取的内容列表（分页） */
+export const searchContentList = (params?: {
+  platform?: string;
+  from?: number;
+  size?: number;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+}) => api.get('/search/content/list', { params });
+
 /** 搜索内容 */
 export const searchContent = (params: {
   q: string;

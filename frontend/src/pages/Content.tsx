@@ -6,12 +6,13 @@ import {
   SearchOutlined,
   CloudUploadOutlined,
   ReloadOutlined,
+  LinkOutlined,
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import {
   searchContent,
+  searchContentList,
   searchPopularTags,
-  publisherGetPending,
   publisherPublishNow,
 } from '../api';
 
@@ -29,7 +30,10 @@ interface ContentItem {
   tags?: string[];
   likes?: number;
   comments?: number;
+  author?: string;
+  url?: string;
   publishTime?: string;
+  crawledAt?: string;
   created_at?: string;
 }
 
@@ -48,7 +52,7 @@ const Content: React.FC = () => {
       setLoading(true);
 
       if (query) {
-        // 搜索模式
+        // 搜索模式 - 使用 ES 搜索
         const response: any = await searchContent({
           q: query,
           platform,
@@ -63,17 +67,25 @@ const Content: React.FC = () => {
           total: response.total || 0,
         }));
       } else {
-        // 获取待发布内容
-        const response: any = await publisherGetPending();
-        setData(response.contents || []);
+        // 默认模式 - 获取所有爬取的内容
+        const response: any = await searchContentList({
+          platform,
+          from: (page - 1) * pagination.pageSize,
+          size: pagination.pageSize,
+          sortBy: 'crawledAt',
+          sortOrder: 'desc',
+        });
+
+        setData(response.hits || []);
         setPagination(prev => ({
           ...prev,
-          current: 1,
-          total: response.count || 0,
+          current: page,
+          total: response.total || 0,
         }));
       }
     } catch (error) {
       message.error('加载数据失败');
+      console.error('加载数据失败:', error);
     } finally {
       setLoading(false);
     }
@@ -161,54 +173,43 @@ const Content: React.FC = () => {
       ),
     },
     {
-      title: '状态',
-      dataIndex: 'status',
-      key: 'status',
-      width: 100,
-      render: (status: string) => {
-        const colorMap: Record<string, string> = {
-          pending: 'orange',
-          published: 'green',
-          failed: 'red',
-          draft: 'default',
-        };
-        const textMap: Record<string, string> = {
-          pending: '待发布',
-          published: '已发布',
-          failed: '失败',
-          draft: '草稿',
-        };
-        return <Tag color={colorMap[status] || 'default'}>{textMap[status] || status}</Tag>;
-      },
+      title: '作者',
+      dataIndex: 'author',
+      key: 'author',
+      width: 120,
+      ellipsis: true,
+      render: (author: string) => author || '-',
     },
     {
-      title: '标签',
-      dataIndex: 'tags',
-      key: 'tags',
-      width: 200,
-      render: (tags: string[]) => (
-        <Space wrap size={[0, 4]}>
-          {(tags || []).slice(0, 3).map(tag => (
-            <Tag key={tag} color="cyan">{tag}</Tag>
-          ))}
-          {tags && tags.length > 3 && <Tag>+{tags.length - 3}</Tag>}
+      title: '互动',
+      key: 'engagement',
+      width: 120,
+      render: (_: any, record: ContentItem) => (
+        <Space size={4}>
+          {record.likes !== undefined && record.likes > 0 && (
+            <Tag color="red">👍 {record.likes}</Tag>
+          )}
+          {record.comments !== undefined && record.comments > 0 && (
+            <Tag color="blue">💬 {record.comments}</Tag>
+          )}
+          {(!record.likes && !record.comments) && '-'}
         </Space>
       ),
     },
     {
-      title: '时间',
-      dataIndex: 'publishTime',
-      key: 'publishTime',
+      title: '爬取时间',
+      dataIndex: 'crawledAt',
+      key: 'crawledAt',
       width: 160,
       render: (date: string, record: ContentItem) => {
-        const time = date || record.created_at;
+        const time = date || record.created_at || record.publishTime;
         return time ? dayjs(time).format('YYYY-MM-DD HH:mm') : '-';
       },
     },
     {
       title: '操作',
       key: 'action',
-      width: 180,
+      width: 150,
       render: (_: any, record: ContentItem) => (
         <Space>
           <Button
@@ -222,31 +223,16 @@ const Content: React.FC = () => {
           >
             查看
           </Button>
-          {record.status === 'pending' && (
+          {record.url && (
             <Button
               type="link"
               size="small"
-              icon={<CloudUploadOutlined />}
-              onClick={() => handlePublish(record)}
+              icon={<LinkOutlined />}
+              onClick={() => window.open(record.url, '_blank')}
             >
-              发布
+              原文
             </Button>
           )}
-          <Button
-            type="link"
-            size="small"
-            danger
-            icon={<DeleteOutlined />}
-            onClick={() => {
-              Modal.confirm({
-                title: '确认删除',
-                content: '确定要删除这篇内容吗？',
-                onOk: () => message.success('删除成功'),
-              });
-            }}
-          >
-            删除
-          </Button>
         </Space>
       ),
     },
@@ -329,21 +315,18 @@ const Content: React.FC = () => {
         open={modalVisible}
         onCancel={() => setModalVisible(false)}
         footer={
-          selectedContent?.status === 'pending' ? (
-            <Space>
-              <Button onClick={() => setModalVisible(false)}>关闭</Button>
+          <Space>
+            <Button onClick={() => setModalVisible(false)}>关闭</Button>
+            {selectedContent?.url && (
               <Button
                 type="primary"
-                icon={<CloudUploadOutlined />}
-                onClick={() => {
-                  handlePublish(selectedContent);
-                  setModalVisible(false);
-                }}
+                icon={<LinkOutlined />}
+                onClick={() => window.open(selectedContent.url, '_blank')}
               >
-                发布到小红书
+                查看原文
               </Button>
-            </Space>
-          ) : null
+            )}
+          </Space>
         }
         width={800}
       >
@@ -351,16 +334,16 @@ const Content: React.FC = () => {
           <div>
             <h2>{selectedContent.title}</h2>
 
-            <Space style={{ marginBottom: 16 }}>
+            <Space style={{ marginBottom: 16 }} wrap>
               <Tag color="blue">{selectedContent.platform || '未知平台'}</Tag>
-              <Tag color={selectedContent.status === 'published' ? 'green' : 'orange'}>
-                {selectedContent.status === 'published' ? '已发布' : '待发布'}
-              </Tag>
-              {selectedContent.likes !== undefined && (
-                <Tag>点赞: {selectedContent.likes}</Tag>
+              {selectedContent.author && (
+                <Tag color="purple">作者: {selectedContent.author}</Tag>
               )}
-              {selectedContent.comments !== undefined && (
-                <Tag>评论: {selectedContent.comments}</Tag>
+              {selectedContent.likes !== undefined && selectedContent.likes > 0 && (
+                <Tag color="red">👍 {selectedContent.likes}</Tag>
+              )}
+              {selectedContent.comments !== undefined && selectedContent.comments > 0 && (
+                <Tag color="blue">💬 {selectedContent.comments}</Tag>
               )}
             </Space>
 
@@ -372,13 +355,6 @@ const Content: React.FC = () => {
                     <Tag key={tag} color="cyan">{tag}</Tag>
                   ))}
                 </Space>
-              </div>
-            )}
-
-            {selectedContent.summary && (
-              <div style={{ marginBottom: 16 }}>
-                <strong>摘要：</strong>
-                <p style={{ color: '#666' }}>{selectedContent.summary}</p>
               </div>
             )}
 
@@ -394,12 +370,12 @@ const Content: React.FC = () => {
                   overflow: 'auto',
                 }}
               >
-                {selectedContent.content}
+                {selectedContent.summary || selectedContent.content || '无内容'}
               </div>
             </div>
 
             <div style={{ color: '#999', fontSize: 12 }}>
-              创建时间：{dayjs(selectedContent.publishTime || selectedContent.created_at).format('YYYY-MM-DD HH:mm:ss')}
+              爬取时间：{dayjs(selectedContent.crawledAt || selectedContent.created_at).format('YYYY-MM-DD HH:mm:ss')}
             </div>
           </div>
         )}
