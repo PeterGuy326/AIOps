@@ -109,6 +109,42 @@ export class DatabaseService {
       .exec();
   }
 
+  /**
+   * 获取所有原始内容（分页）
+   */
+  async findAllRawContents(options: {
+    platform?: string;
+    skip?: number;
+    limit?: number;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+  } = {}): Promise<{ total: number; contents: RawContent[] }> {
+    const {
+      platform,
+      skip = 0,
+      limit = 20,
+      sortBy = 'crawledAt',
+      sortOrder = 'desc',
+    } = options;
+
+    const query: any = {};
+    if (platform) {
+      query.platform = platform;
+    }
+
+    const [contents, total] = await Promise.all([
+      this.rawContentModel
+        .find(query)
+        .sort({ [sortBy]: sortOrder === 'desc' ? -1 : 1 })
+        .skip(skip)
+        .limit(limit)
+        .exec(),
+      this.rawContentModel.countDocuments(query),
+    ]);
+
+    return { total, contents };
+  }
+
   async getTrendingContent(days: number = 7, limit: number = 30): Promise<RawContent[]> {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days);
